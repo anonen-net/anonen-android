@@ -1,0 +1,49 @@
+
+<resources xmlns:tools="http://schemas.android.com/tools" tools:ignore="MissingTranslation">
+    <string name="app_name">あのねん</string>
+
+    <string name="accessibility_service_label">あのねん テキスト入力</string>
+    <string name="accessibility_service_description">読み取るもの: 入力中の欄の文字と選択範囲、キーボードが出ているか。使い道: 入力中だけボタンを出し、話した文字を入れる。保存・送信: しません。</string>
+
+    <string name="channel_service">ボタン</string>
+    <string name="channel_result">お知らせ</string>
+
+    <string name="notif_service_title">あのねんのボタンが出ています</string>
+    <string name="notif_overlay_failed">ボタンを出せません。重ねて表示を許可してください</string>
+    <string name="notif_fgs_start_denied">ボタンを出せませんでした。アプリで「ボタンを出す」を押してください</string>
+    <string name="notif_cloud_low_remaining_text">残り約 %1$d 分です</string>
+
+    <string name="notif_cloud_model_switch_action">「%1$s」に切り替える</string>
+    <string name="notif_cloud_model_switched">モデルを「%1$s」に切り替えました</string>
+    <string name="notif_cloud_model_not_switched_title">モデルは切り替えていません</string>
+
+    <string name="notif_transcribe_cancel_action">やめる</string>
+
+    <string name="notif_recording_cancel_action">録音を削除</string>
+
+    <string name="past_due_warning">このままだと契約が終わります。anonen.net でカードを確かめてください。</string>
+
+    <string name="usage_resets_at">%1$s に満タンに戻ります（日本時間）</string>
+
+    <string name="notice_model_retired_can_switch">使っていたモデルが終わりました。通知から「%1$s」に切り替えられます。</string>
+    <string name="notice_model_retired_deselected">使っていたモデルが終わりました。アプリで選んでください。</string>
+    <string name="notice_no_model_selected">モデルが選ばれていません。アプリで選んでください。</string>
+    <string name="notice_local_model_missing">モデルが入っていません。アプリで選び直してください。</string>
+    <string name="notice_model_switched">モデルを「%1$s」に切り替えました。</string>
+    <string name="notice_model_switch_catalog_unavailable">一覧を読めず、切り替えていません。アプリを開いて選んでください。</string>
+    <string name="notice_model_switch_catalog_empty">一覧が空で、切り替えていません。アプリでスマホの中のモデルを選べます。</string>
+
+    <string name="notice_model_switch_why_retired">「%1$s」はもう使えないので、切り替えていません。</string>
+    <string name="notice_model_switch_why_needs_disclosure">「%1$s」は、音声の扱いを確かめてから選ぶので、切り替えていません。</string>
+    <string name="notice_model_switch_why_not_previous">「%1$s」は前に使ったモデルの一覧に無いので、切り替えていません。</string>
+    <string name="notice_model_switch_then_kept">今のモデルのままです。</string>
+    <string name="notice_model_switch_then_none">モデルが選ばれていません。アプリを開いて選んでください。</string>
+    <string name="notice_model_switch_then_offer">使っているモデルは終わりました。通知から「%1$s」に切り替えられます。</string>
+    <string name="notice_model_switch_then_deselected">使っていたモデルは終わったので、外しました。アプリを開いて選んでください。</string>
+
+    <string name="notice_model_switch_how_to_choose">「%1$s」を使うときは、アプリを開いて選んでください（音声の扱いが出ます）。</string>
+    <string name="notice_model_switch_how_to_choose_plain">「%1$s」を使うときは、アプリを開いて選んでください。</string>
+    <string name="notice_model_switch_target_is_current">「%1$s」の扱いに同意しないまま、声が送られます。アプリを開いて選び直してください。</string>
+    <string name="notice_model_switch_target_is_current_kept">「%1$s」をそのまま使っています。</string>
+    <string name="notice_access_required">ログインと契約が必要です。アプリを開いてください。</string>
+</resources>

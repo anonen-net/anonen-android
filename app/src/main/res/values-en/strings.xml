@@ -1,0 +1,5 @@
+
+<resources>
+    <string name="past_due_warning">Payment failed. Your subscription will be canceled if not resolved. Update your card at anonen.net.</string>
+    <string name="usage_resets_at">Resets %1$s (JST)</string>
+</resources>

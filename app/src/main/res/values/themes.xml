@@ -1,0 +1,9 @@
+<resources>
+
+    <style name="Theme.Anonen" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#FFFAFAF9</item>
+        <item name="android:navigationBarColor">#FFFAFAF9</item>
+        <item name="android:statusBarColor">#FFFAFAF9</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>
