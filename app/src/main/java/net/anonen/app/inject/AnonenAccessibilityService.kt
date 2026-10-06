@@ -1,6 +1,8 @@
 package net.anonen.app.inject
 
 import android.accessibilityservice.AccessibilityService
+import android.content.ComponentName
+import android.content.Context
 import android.os.Build
 import android.os.SystemClock
 import android.provider.Settings
@@ -143,9 +145,24 @@ class AnonenAccessibilityService : AccessibilityService() {
 
         val isConnected: Boolean get() = instance != null
 
+        fun isEnabled(context: Context): Boolean {
+            if (isConnected) return true
+            val me = ComponentName(context, AnonenAccessibilityService::class.java)
+            val enabled =
+                runCatching {
+                    Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
+                }.getOrNull()
+            return accessibilityListIncludes(enabled, me.flattenToString(), me.flattenToShortString())
+        }
+
         private const val DAY_MS = 24 * 60 * 60 * 1000L
     }
 }
+
+internal fun accessibilityListIncludes(
+    enabled: String?,
+    vararg names: String,
+): Boolean = enabled.orEmpty().split(':').any { entry -> names.any { it.equals(entry, ignoreCase = true) } }
 
 internal const val REVIVE_MAX = 3
 internal const val REVIVE_WINDOW_MS = 10 * 60 * 1000L

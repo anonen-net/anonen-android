@@ -136,7 +136,7 @@ private fun readPermissions(context: Context): PermissionStates =
         microphone =
             ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
                 PackageManager.PERMISSION_GRANTED,
-        accessibility = AnonenAccessibilityService.isConnected,
+        accessibility = AnonenAccessibilityService.isEnabled(context),
         notifications = NotificationManagerCompat.from(context).areNotificationsEnabled(),
     )
 

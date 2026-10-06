@@ -259,7 +259,8 @@ class FloatingButtonService : Service() {
                 entitled = nowEntitled
                 abortForLostAccess(app, g)
 
-                if (lost && state == ButtonState.IDLE) say(FeedbackEvent.ACCESS_REQUIRED)
+                val quiet = app.entitlement.consumeQuietLogout()
+                if (lost && state == ButtonState.IDLE && !quiet) say(FeedbackEvent.ACCESS_REQUIRED)
                 updateOverlayVisibility()
             }
         }

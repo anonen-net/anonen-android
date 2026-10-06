@@ -165,7 +165,7 @@ private fun AnonenCloudSection(
                     app.cloudAuth.logout()
                     app.cloudUsage.clear()
 
-                    app.entitlement.onLogout()
+                    app.entitlement.onUserLogout()
                     isSignedIn.value = false
                     authEmail.value = ""
                 },

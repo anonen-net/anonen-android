@@ -232,7 +232,7 @@ internal fun SubscriptionRequiredScreen(
                         confirmLogout = false
                         app.cloudAuth.logout()
                         app.cloudUsage.clear()
-                        app.entitlement.onLogout()
+                        app.entitlement.onUserLogout()
                     },
                 )
             }

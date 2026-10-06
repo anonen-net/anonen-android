@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import net.anonen.app.core.AccessControl
 import net.anonen.app.core.AccessControl.AccessGate
+import java.util.concurrent.atomic.AtomicBoolean
 
 class EntitlementManager(
     private val auth: AnonenCloudAuth,
@@ -13,6 +14,8 @@ class EntitlementManager(
 ) {
     private val _gate = MutableStateFlow(compute())
     val gate: StateFlow<AccessGate> = _gate.asStateFlow()
+
+    private val quietLogout = AtomicBoolean(false)
 
     @Volatile
     private var checking: Boolean = false
@@ -46,6 +49,13 @@ class EntitlementManager(
         }
         refresh()
     }
+
+    fun onUserLogout() {
+        quietLogout.set(true)
+        onLogout()
+    }
+
+    fun consumeQuietLogout(): Boolean = quietLogout.getAndSet(false)
 
     fun onLogout() {
         checking = false
