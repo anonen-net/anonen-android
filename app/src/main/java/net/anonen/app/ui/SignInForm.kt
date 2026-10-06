@@ -34,6 +34,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -61,6 +62,8 @@ internal fun shouldAutoVerify(
     busy: Boolean,
 ): Boolean = code.length == 6 && code != lastTried && !busy
 
+internal fun isOperatorAccount(email: String): Boolean = email.trim().lowercase().endsWith("@anonen.net")
+
 @Composable
 internal fun CloudSignInForm(
     onSignedIn: (email: String) -> Unit,
@@ -78,6 +81,8 @@ internal fun CloudSignInForm(
         var lastTried by rememberSaveable { mutableStateOf("") }
         var loading by remember { mutableStateOf(false) }
         var captchaOpen by remember { mutableStateOf(false) }
+
+        var password by remember { mutableStateOf("") }
         var now by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
         LaunchedEffect(sentAt) {
             while (true) {
@@ -87,6 +92,7 @@ internal fun CloudSignInForm(
             }
         }
         val resendWait = resendWaitSeconds(sentAt, now)
+        val operatorLogin = isOperatorAccount(email)
 
         fun requestCaptcha() {
             if (!EmailFormat.isValid(email)) {
@@ -118,6 +124,24 @@ internal fun CloudSignInForm(
             }
         }
 
+        fun loginWithPassword(captchaToken: String) {
+            captchaOpen = false
+            loading = true
+            errorMsg = null
+            scope.launch {
+                try {
+                    withContext(Dispatchers.IO) { auth.signInWithPassword(email.trim(), password, captchaToken) }
+                    onSignedIn(email.trim())
+                } catch (e: InterruptedIOException) {
+                    errorMsg = "時間がかかりすぎました"
+                } catch (e: Exception) {
+                    errorMsg = e.message ?: AnonenCloudAuth.LOGIN_FAILED
+                } finally {
+                    loading = false
+                }
+            }
+        }
+
         fun verify() {
             if (otpCode.length != 6 || loading) return
             lastTried = otpCode
@@ -130,7 +154,7 @@ internal fun CloudSignInForm(
                 } catch (e: InterruptedIOException) {
                     errorMsg = "時間がかかりすぎました"
                 } catch (e: Exception) {
-                    errorMsg = e.message ?: "ログインできませんでした"
+                    errorMsg = e.message ?: AnonenCloudAuth.LOGIN_FAILED
                 } finally {
                     loading = false
                 }
@@ -139,7 +163,7 @@ internal fun CloudSignInForm(
 
         if (captchaOpen) {
             CaptchaDialog(
-                onToken = { token -> sendCode(token) },
+                onToken = { token -> if (operatorLogin) loginWithPassword(token) else sendCode(token) },
                 onDismiss = {
                     captchaOpen = false
                     errorMsg = "人か確かめるのを、やめました"
@@ -172,6 +196,22 @@ internal fun CloudSignInForm(
             colors = textFieldColors(),
             modifier = Modifier.fillMaxWidth(),
         )
+
+        if (operatorLogin && !otpSent) {
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = password,
+                onValueChange = { password = it },
+                label = { Text("パスワード") },
+                enabled = !loading && !captchaOpen,
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { requestCaptcha() }),
+                colors = textFieldColors(),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
 
         if (otpSent) {
             Spacer(Modifier.height(8.dp))
@@ -209,7 +249,7 @@ internal fun CloudSignInForm(
         if (!otpSent) {
             Button(
                 onClick = { requestCaptcha() },
-                enabled = email.isNotBlank() && !loading && !captchaOpen,
+                enabled = email.isNotBlank() && (!operatorLogin || password.isNotEmpty()) && !loading && !captchaOpen,
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(8.dp),
             ) {
@@ -220,7 +260,7 @@ internal fun CloudSignInForm(
                         color = MaterialTheme.colorScheme.onPrimary,
                     )
                 } else {
-                    Text("数字をメールで受け取る")
+                    Text(if (operatorLogin) "ログイン" else "数字をメールで受け取る")
                 }
             }
         } else {

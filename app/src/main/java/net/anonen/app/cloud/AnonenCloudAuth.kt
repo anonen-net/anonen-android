@@ -68,8 +68,7 @@ class AnonenCloudAuth(
         email: String,
         captchaToken: String? = null,
     ) {
-        if (supabaseUrl.isBlank()) throw AnonenCloudAuthException("Supabase URL が未設定です")
-        if (!isOnline()) throw AnonenCloudAuthException(OFFLINE_MESSAGE)
+        ensureReady()
         val url = "${supabaseUrl.trimEnd('/')}/auth/v1/otp"
         val body = otpRequestBody(email, captchaToken)
         val request =
@@ -113,8 +112,7 @@ class AnonenCloudAuth(
         email: String,
         token: String,
     ) {
-        if (supabaseUrl.isBlank()) throw AnonenCloudAuthException("Supabase URL が未設定です")
-        if (!isOnline()) throw AnonenCloudAuthException(OFFLINE_MESSAGE)
+        ensureReady()
         val url = "${supabaseUrl.trimEnd('/')}/auth/v1/verify"
 
         val body =
@@ -142,10 +140,50 @@ class AnonenCloudAuth(
             DiagnosticsLog.log("ログインの数字を確かめられない http=${response.code}")
             throw AnonenCloudAuthException(
                 when (response.code) {
-                    429 -> "何回も入れたので、少し待ってください"
+                    429 -> TOO_MANY_TRIES
 
                     400, 401, 403 -> "数字が違うか、古くなっています。一番新しいメールの数字を入れてください"
                     else -> "うまく確かめられませんでした"
+                },
+            )
+        }
+        consumeSessionResponse(responseBody)
+    }
+
+    private fun ensureReady() {
+        if (supabaseUrl.isBlank()) throw AnonenCloudAuthException("Supabase URL が未設定です")
+        if (!isOnline()) throw AnonenCloudAuthException(OFFLINE_MESSAGE)
+    }
+
+    fun signInWithPassword(
+        email: String,
+        password: String,
+        captchaToken: String? = null,
+    ) {
+        ensureReady()
+        val url = "${supabaseUrl.trimEnd('/')}/auth/v1/token?grant_type=password"
+        val body = passwordRequestBody(email, password, captchaToken)
+        val request =
+            Request.Builder()
+                .url(url)
+                .header("apikey", anonKey)
+                .header("Content-Type", "application/json")
+                .post(body.toRequestBody(JSON_MEDIA_TYPE))
+                .build()
+        val response =
+            try {
+                http.newCall(request).execute()
+            } catch (e: IOException) {
+                throw AnonenCloudAuthException(networkErrorMessage(e))
+            }
+        val responseBody = response.body?.string().orEmpty()
+        if (!response.isSuccessful) {
+            DiagnosticsLog.log("パスワードでログインできない http=${response.code}")
+            throw AnonenCloudAuthException(
+                when (response.code) {
+                    429 -> TOO_MANY_TRIES
+                    400, 401, 403 -> "メールアドレスかパスワードが違います"
+                    else -> LOGIN_FAILED
                 },
             )
         }
@@ -283,15 +321,15 @@ class AnonenCloudAuth(
             val parsed = Json.parseToJsonElement(responseBody).jsonObject
             access =
                 parsed["access_token"]?.jsonPrimitive?.content
-                    ?: throw AnonenCloudAuthException("ログインできませんでした")
+                    ?: throw AnonenCloudAuthException(LOGIN_FAILED)
             newRefresh =
                 parsed["refresh_token"]?.jsonPrimitive?.content
-                    ?: throw AnonenCloudAuthException("ログインできませんでした")
+                    ?: throw AnonenCloudAuthException(LOGIN_FAILED)
             expiresIn = parsed["expires_in"]?.jsonPrimitive?.long ?: 3600L
         } catch (e: AnonenCloudAuthException) {
             throw e
         } catch (e: Exception) {
-            throw AnonenCloudAuthException("ログインできませんでした")
+            throw AnonenCloudAuthException(LOGIN_FAILED)
         }
 
         storeRefreshToken(newRefresh)
@@ -307,10 +345,10 @@ class AnonenCloudAuth(
             val parsed = Json.parseToJsonElement(body).jsonObject
             access =
                 parsed["access_token"]?.jsonPrimitive?.content
-                    ?: throw AnonenCloudAuthException("ログインできませんでした")
+                    ?: throw AnonenCloudAuthException(LOGIN_FAILED)
             refresh =
                 parsed["refresh_token"]?.jsonPrimitive?.content
-                    ?: throw AnonenCloudAuthException("ログインできませんでした")
+                    ?: throw AnonenCloudAuthException(LOGIN_FAILED)
             expiresIn = parsed["expires_in"]?.jsonPrimitive?.long ?: 3600L
             email =
                 (parsed["user"] as? JsonObject)
@@ -318,7 +356,7 @@ class AnonenCloudAuth(
         } catch (e: AnonenCloudAuthException) {
             throw e
         } catch (e: Exception) {
-            throw AnonenCloudAuthException("ログインできませんでした")
+            throw AnonenCloudAuthException(LOGIN_FAILED)
         }
 
         synchronized(refreshLock) {
@@ -359,6 +397,8 @@ class AnonenCloudAuth(
         private val JSON_MEDIA_TYPE = "application/json".toMediaType()
         private const val REFRESH_SKEW_MS = 60_000L
         private const val OFFLINE_MESSAGE = "ネットにつながっていません"
+        private const val TOO_MANY_TRIES = "何回も入れたので、少し待ってください"
+        internal const val LOGIN_FAILED = "ログインできませんでした"
 
         private const val AUTH_CALL_TIMEOUT_S = 30L
         private const val KEY_REFRESH_TOKEN = "handy_cloud_refresh_token"
@@ -381,6 +421,19 @@ internal fun otpRequestBody(
     buildJsonObject {
         put("email", email)
 
+        captchaToken?.takeIf { it.isNotBlank() }?.let {
+            putJsonObject("gotrue_meta_security") { put("captcha_token", it) }
+        }
+    }.toString()
+
+internal fun passwordRequestBody(
+    email: String,
+    password: String,
+    captchaToken: String?,
+): String =
+    buildJsonObject {
+        put("email", email)
+        put("password", password)
         captchaToken?.takeIf { it.isNotBlank() }?.let {
             putJsonObject("gotrue_meta_security") { put("captcha_token", it) }
         }
