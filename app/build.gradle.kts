@@ -198,8 +198,8 @@ android {
         applicationId = "net.anonen.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 216
-        versionName = "1.0.89"
+        versionCode = 251
+        versionName = "1.0.124"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
@@ -267,7 +267,7 @@ android {
 
     sourceSets {
         val useDevFeatures =
-            file("src/dev/java").exists() && dotEnv["ANONEN_EDITION"] != "product"
+            file("src/dev/java").exists() && cloudSecret("ANONEN_EDITION", "anonen.edition") == "dev"
         getByName("main").java.srcDir(if (useDevFeatures) "src/dev/java" else "src/stub/java")
         if (useDevFeatures) getByName("test").java.srcDir("src/devTest/java")
 

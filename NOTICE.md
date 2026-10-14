@@ -83,7 +83,9 @@ maintainer: `csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17`.
 
 <https://github.com/snakers4/silero-vad> — MIT License, Copyright (c) 2020-present Silero Team
 
-Bundled as `app/src/main/assets/silero_vad_v4.onnx`.
+Bundled as `app/src/main/assets/silero_vad_v4.onnx`: the `silero_vad.onnx` of the
+v4.0 release, SHA-256
+`a35ebf52fd3ce5f1469b2a36158dba761bc47b973ea3382b3186ca15b1f5af28`.
 
 The MIT permission notice reproduced above (under Handy) applies to this
 component as well, with the copyright notice given here.
@@ -101,6 +103,54 @@ and are not derived from the upstream project.
 The vector path data of the icons in `app/src/main/res/drawable/` (`ic_mic`,
 `ic_error`, `ic_sync`, `ic_notification`, `ic_touch_app`, `ic_keyboard`,
 `ic_content_paste`) is taken from Material Design Icons.
+
+## Lucide and Feather (icon shapes)
+
+<https://github.com/lucide-icons/lucide> — ISC License
+<https://github.com/feathericons/feather> — MIT License
+
+The flask and scissors marks drawn in
+`app/src/main/java/net/anonen/app/ui/ModelBadges.kt` (`flaskIcon`,
+`scissorsIcon`) follow the shapes of Lucide's `flask-conical` and `scissors`
+icons. Feather's `scissors` has the same handles.
+
+ISC License
+
+Copyright (c) 2026 Lucide Icons and Contributors
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+The MIT License (MIT)
+
+Copyright (c) 2013-present Cole Bemis
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ## Other dependencies
 

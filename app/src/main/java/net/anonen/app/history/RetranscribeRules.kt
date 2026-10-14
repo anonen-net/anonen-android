@@ -1,5 +1,6 @@
 package net.anonen.app.history
 
+import net.anonen.app.cloud.AnonenCloudEngine
 import net.anonen.app.core.AccessControl
 import net.anonen.app.pipeline.PipelineOutcome
 import java.util.Locale
@@ -13,6 +14,17 @@ object RetranscribeRules {
     const val INTERRUPTED = "文字起こしをやめました"
 
     const val ROW_GONE = "この記録は削除されていたので、文字は残していません"
+
+    const val TOO_LONG = AnonenCloudEngine.AUDIO_TOO_LONG_MESSAGE
+
+    fun tooLongForCloud(
+        audioMs: Long,
+        limitSeconds: Int?,
+    ): Boolean {
+        if (limitSeconds == null) return false
+        val seconds = (audioMs + 999) / 1000
+        return seconds > limitSeconds
+    }
 
     sealed interface Start {
         data object Ready : Start

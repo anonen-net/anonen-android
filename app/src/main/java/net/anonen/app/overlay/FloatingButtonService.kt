@@ -10,6 +10,7 @@ import android.os.IBinder
 import android.provider.Settings
 import android.view.View
 import android.view.WindowManager
+import android.view.accessibility.AccessibilityNodeInfo
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -25,8 +26,11 @@ import kotlinx.coroutines.withContext
 import net.anonen.app.AnonenApp
 import net.anonen.app.R
 import net.anonen.app.asr.EngineProvider
+import net.anonen.app.cloud.AnonenCloudModels
+import net.anonen.app.cloud.TranscribeCancelController
 import net.anonen.app.cloud.dataPolicy
 import net.anonen.app.core.AccessControl
+import net.anonen.app.core.AsrError
 import net.anonen.app.core.DiagnosticsLog
 import net.anonen.app.core.LocalModelInfo
 import net.anonen.app.core.ModelIds
@@ -36,7 +40,10 @@ import net.anonen.app.core.ThemeMode
 import net.anonen.app.dev.DevFeaturesProvider
 import net.anonen.app.inject.AnonenAccessibilityService
 import net.anonen.app.inject.DeliveryOutcome
+import net.anonen.app.inject.PasswordVerdict
 import net.anonen.app.inject.TextInjector
+import net.anonen.app.inject.isBlockedPasswordNode
+import net.anonen.app.inject.passwordVerdict
 import net.anonen.app.pipeline.PipelineOutcome
 import net.anonen.app.pipeline.TranscriptionPipeline
 import net.anonen.app.record.RecordingLimitTracker
@@ -45,6 +52,7 @@ import net.anonen.app.record.SileroVad
 import net.anonen.app.record.WavRecorder
 import net.anonen.app.settings.AnonenSettings
 import net.anonen.app.ui.MainActivity
+import java.util.concurrent.atomic.AtomicReference
 
 class FloatingButtonService : Service() {
     private val crashGuard =
@@ -75,6 +83,11 @@ class FloatingButtonService : Service() {
     private lateinit var injector: TextInjector
     private lateinit var pipeline: TranscriptionPipeline
 
+    private val inFlightWav = AtomicReference<ByteArray?>(null)
+
+    @Volatile
+    private var stopTarget: AccessibilityNodeInfo? = null
+
     private val recorder = WavRecorder()
     private var sileroVad: SileroVad? = null
     private var state = ButtonState.IDLE
@@ -92,6 +105,9 @@ class FloatingButtonService : Service() {
     private var recordingStartedAt = 0L
 
     private var hapticEnabled = true
+
+    @Volatile
+    private var insertIntoPasswordFields = false
 
     private var heldDiscard: WavRecorder.HeldRecording? = null
     private var heldDiscardJob: Job? = null
@@ -162,13 +178,17 @@ class FloatingButtonService : Service() {
                         },
                     )
                 },
-                deliver = { text -> injector.deliver(text) },
+                deliver = { text ->
+                    injector.deliver(text, allowPasswordFields = insertIntoPasswordFields, target = stopTarget)
+                },
                 saveHistory = { text, duration, retention, wav ->
                     app.historyRepository.add(text, duration, retention.limit, wav, modelUsed, retention.audioLimit)
                 },
                 modelNameResolver = { s -> EngineProvider.resolvedModelName(s) },
-                onAsrMeasured = { modelId, asrMs -> app.modelStats.record(modelId, asrMs) },
+                onAsrMeasured = { modelId, asrMs, audioMs -> app.modelStats.record(modelId, asrMs, audioMs) },
                 isCancelled = { app.transcribeCancel.isCancelled },
+                lostAccess = { app.transcribeCancel.cancelReason == TranscribeCancelController.Reason.LOST_ACCESS },
+                onResponse = { inFlightWav.set(null) },
             )
 
         if (!startForegroundCompat(recording = false)) {
@@ -214,6 +234,10 @@ class FloatingButtonService : Service() {
                 stopAndTranscribe()
                 show(fb)
             }
+        }
+
+        recorder.onCaptureLost = {
+            scope.launch { stopAndTranscribe() }
         }
 
         recorder.onAutoStopWarning = {
@@ -275,6 +299,7 @@ class FloatingButtonService : Service() {
                 feedbackEnabled = s.audioFeedback
                 feedbackVolume = s.audioFeedbackVolume
                 hapticEnabled = s.hapticFeedback
+                insertIntoPasswordFields = s.insertIntoPasswordFields
                 recordingAudioSource = s.recordingAudioSource
                 recorder.spectralEqEnabled = s.spectralEqEnabled
                 updateOverlayVisibility()
@@ -385,6 +410,10 @@ class FloatingButtonService : Service() {
 
     override fun onDestroy() {
         isRunning = false
+
+        val unanswered = inFlightWav.getAndSet(null)
+        scope.cancel()
+        if (unanswered != null) keepUnansweredRecording(unanswered)
         dropHeldDiscard()
         recorder.cancel()
         sileroVad?.close()
@@ -395,8 +424,19 @@ class FloatingButtonService : Service() {
             windowManager.removeView(view)
         }
         if (::sounds.isInitialized) sounds.release()
-        scope.cancel()
         super.onDestroy()
+    }
+
+    private fun keepUnansweredRecording(wav: ByteArray) {
+        val app = AnonenApp.from(this)
+        DiagnosticsLog.log("文字起こし中にボタンをしまった → 送信を切り、録音を記録に残す")
+        app.transcribeCancel.requestCancel(TranscribeCancelController.Reason.USER)
+        val keep = pipeline
+        app.runDetached {
+            val saved = keep.preserveCancelled(wav)
+            DiagnosticsLog.log("しまったときの録音: 履歴保存=$saved")
+            notifier.notifyTranscribeCancelled(saved)
+        }
     }
 
     private fun onButtonTap() {
@@ -441,10 +481,24 @@ class FloatingButtonService : Service() {
             }
         }
 
+        if (app.cloudModels.blocksStartForEmptyCatalog(selectedModel)) {
+            DiagnosticsLog.log("録音ブロック: 一覧が 0 件（選択は外さない）")
+            app.userNotices.post(AnonenCloudModels.emptyCatalogMessage(AnonenCloudModels.Fetch.LOADED))
+            fail(FeedbackEvent.MODEL_RETIRED)
+
+            scope.launch { runCatching { app.cloudModels.refresh(force = true) } }
+            return
+        }
         if (app.cloudModels.isSelectionRetired(selectedModel)) {
             DiagnosticsLog.log("録音ブロック: 選択モデルが提供終了 ($selectedModel)")
             scope.launch { handleRetiredSelection(app, app.settingsRepository.current()) }
             fail(FeedbackEvent.MODEL_RETIRED)
+            return
+        }
+
+        if (focusedFieldIsBlockedPassword()) {
+            DiagnosticsLog.log("録音ブロック: 入力欄がパスワードの欄")
+            fail(FeedbackEvent.PASSWORD)
             return
         }
         if (!startForegroundCompat(recording = true)) {
@@ -475,12 +529,24 @@ class FloatingButtonService : Service() {
         }
     }
 
-    private fun recordingLimitSeconds(app: AnonenApp): Int? =
-        if (LocalModelInfo.fromId(selectedModel) != null) {
-            null
-        } else {
-            app.recordingLimits.maxRecordingSeconds
-        }
+    private fun focusedFieldIsBlockedPassword(): Boolean {
+        val service = AnonenAccessibilityService.instance ?: return false
+        val focus = service.findInputFocus()
+        val detected =
+            if (focus != null) {
+                try {
+                    isBlockedPasswordNode(focus.isPassword, focus.inputType)
+                } finally {
+                    @Suppress("DEPRECATION")
+                    focus.recycle()
+                }
+            } else {
+                service.isCurrentInputPassword()
+            }
+        return passwordVerdict(insertIntoPasswordFields, detected) == PasswordVerdict.BLOCK
+    }
+
+    private fun recordingLimitSeconds(app: AnonenApp): Int? = app.recordingLimits.limitSecondsFor(selectedModel)
 
     private fun warmCloudConnection(trigger: String) {
         val app = AnonenApp.from(this)
@@ -497,6 +563,8 @@ class FloatingButtonService : Service() {
                     .ifBlank { null }
 
             launch { runCatching { app.enclaveKeys.prefetch() } }
+
+            if (app.cloudModels.models.value.isEmpty()) launch { runCatching { app.cloudModels.refresh() } }
             val startMs = android.os.SystemClock.elapsedRealtime()
             runCatching { app.cloudClient.warm(app.cloudAuth.getAccessToken(), model) }
                 .onSuccess {
@@ -528,13 +596,14 @@ class FloatingButtonService : Service() {
             app.cloudModels.firstAvailablePreviouslySelected(settings.previouslySelectedCloudModels) {
                 settings.allowsOneTapSwitchTo(it.id, it.dataPolicy().fingerprint)
             }
+
+        app.settingsRepository.update { it.withNoModelSelected() }
         if (target != null) {
             val name = target.displayName.ifBlank { target.id }
             notifier.notifyModelRetired(switchTargetId = target.id, switchTargetName = name)
             app.userNotices.post(getString(R.string.notice_model_retired_can_switch, name))
-            DiagnosticsLog.log("提供終了: 過去選択 ${target.id} への切替を提示")
+            DiagnosticsLog.log("提供終了: 過去選択 ${target.id} への切替を提示（選択は外した）")
         } else {
-            app.settingsRepository.update { it.withNoModelSelected() }
             notifier.notifyNoModelSelected()
             app.userNotices.post(getString(R.string.notice_model_retired_deselected))
             DiagnosticsLog.log("提供終了: ワンタップで切り替えられる過去選択が無いため選択なしに")
@@ -613,7 +682,8 @@ class FloatingButtonService : Service() {
             }
             RecordingAccessRules.Abort.CANCEL_TRANSCRIBE -> {
                 DiagnosticsLog.log("認可喪失で転写を中断 ($gate)")
-                app.transcribeCancel.requestCancel()
+
+                app.transcribeCancel.requestCancel(TranscribeCancelController.Reason.LOST_ACCESS)
             }
         }
         notifier.notifyAccessRequired()
@@ -673,6 +743,8 @@ class FloatingButtonService : Service() {
         startProcessingHints()
 
         app.transcribeCancel.begin()
+
+        stopTarget = AnonenAccessibilityService.instance?.findInputFocus()
         startForegroundCompat(recording = false, cancellableTranscribe = true)
         scope.launch(Dispatchers.Default) {
             try {
@@ -686,6 +758,9 @@ class FloatingButtonService : Service() {
                 }
             } finally {
                 withContext(NonCancellable + Dispatchers.Main) {
+                    @Suppress("DEPRECATION")
+                    stopTarget?.recycle()
+                    stopTarget = null
                     if (isRunning && state != ButtonState.RECORDING) {
                         startForegroundCompat(recording = false)
                     }
@@ -723,7 +798,25 @@ class FloatingButtonService : Service() {
             result.rawWav,
             wav,
         )
-        when (val outcome = pipeline.run(wav)) {
+        inFlightWav.set(wav)
+        val pipelineOutcome =
+            try {
+                pipeline.run(wav)
+            } catch (e: OutOfMemoryError) {
+                AnonenApp.from(this@FloatingButtonService).logThrowable("transcribe-oom", e)
+                val saved = runCatching { pipeline.preserveFailed(wav) }.getOrDefault(false)
+                PipelineOutcome.AsrFailed(
+                    AsrError(
+                        AsrError.Kind.CONFIG,
+                        OverlayFeedback.of(FeedbackEvent.INTERNAL_ERROR).text,
+                        "OutOfMemoryError",
+                    ),
+                    saved,
+                )
+            } finally {
+                inFlightWav.set(null)
+            }
+        when (val outcome = pipelineOutcome) {
             is PipelineOutcome.Delivered ->
                 withContext(Dispatchers.Main) {
                     when (outcome.delivery) {
@@ -749,6 +842,11 @@ class FloatingButtonService : Service() {
                 }
             is PipelineOutcome.Cancelled ->
                 withContext(Dispatchers.Main) {
+                    if (!outcome.byUser) {
+                        setState(ButtonState.IDLE)
+                        return@withContext
+                    }
+
                     notifier.notifyTranscribeCancelled(outcome.audioSavedToHistory)
                     setState(ButtonState.IDLE)
                     if (OverlayFeedback.onScreen(FeedbackEvent.TRANSCRIBE_CANCELLED, notifier.canPost())) {

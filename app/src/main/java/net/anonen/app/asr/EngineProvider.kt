@@ -2,6 +2,7 @@ package net.anonen.app.asr
 
 import net.anonen.app.AnonenApp
 import net.anonen.app.cloud.AnonenCloudEngine
+import net.anonen.app.cloud.wantsFillerRemoval
 import net.anonen.app.core.AsrError
 import net.anonen.app.core.LocalModelInfo
 import net.anonen.app.core.ModelIds
@@ -41,9 +42,10 @@ object EngineProvider {
                 onNoSubscription = { app.entitlement.onNoSubscription() },
                 cancel = cancel ?: app.transcribeCancel,
                 isOnline = { net.anonen.app.core.NetworkStatus.isOnline(app) },
-                opusEncode = { wav -> OpusOggEncoder.encode(wav, app.cacheDir) },
+                opusEncode = cloudOpusEncoder(app),
                 enclaveKeys = app.enclaveKeys,
                 sealedRequired = net.anonen.app.BuildConfig.SEALED_REQUIRED,
+                removeFillers = wantsFillerRemoval(settings.removeFillers, app.cloudModels.modelInfo(cloudModelId)),
             )
         }
 
@@ -63,6 +65,12 @@ object EngineProvider {
         LocalModelInfo.fromId(settings.selectedModel)?.let { return it.displayName }
         return DevFeaturesProvider.instance.modelDisplayName(settings.selectedModel)
             ?: settings.selectedModel
+    }
+
+    private fun cloudOpusEncoder(app: AnonenApp): ((ByteArray) -> ByteArray?)? {
+        val dev = DevFeaturesProvider.instance
+        if (dev.sendsWavToCloud(app)) return null
+        return { wav -> OpusOggEncoder.encode(wav)?.also { dev.onOpusEncoded(app, it) } }
     }
 
     private object UnconfiguredEngine : TranscriptionEngine {

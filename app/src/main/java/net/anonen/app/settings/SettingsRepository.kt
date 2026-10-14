@@ -40,6 +40,8 @@ class SettingsRepository(private val dataStore: DataStore<Preferences>) {
         val PREVIOUS_CLOUD_MODELS = stringPreferencesKey("previously_selected_cloud_models_json")
         val ACKNOWLEDGED_POLICIES = stringPreferencesKey("acknowledged_cloud_policies_json")
         val LANGUAGE_HINT = stringPreferencesKey("language_hint")
+
+        val REMOVE_FILLERS = booleanPreferencesKey("cloud_remove_fillers")
         val CUSTOM_WORDS = stringPreferencesKey("custom_words_json")
         val WORD_THRESHOLD = doublePreferencesKey("word_correction_threshold")
         val CUSTOM_FILLER_WORDS = stringPreferencesKey("custom_filler_words_json")
@@ -55,6 +57,7 @@ class SettingsRepository(private val dataStore: DataStore<Preferences>) {
         val RECORDING_HINTS_SHOWN = intPreferencesKey("recording_hints_shown")
         val BUTTON_LOOK_VERSION = intPreferencesKey("button_look_version")
         val HAPTIC_FEEDBACK = booleanPreferencesKey("haptic_feedback")
+        val INSERT_INTO_PASSWORD_FIELDS = booleanPreferencesKey("insert_into_password_fields")
         val AUDIO_FEEDBACK = booleanPreferencesKey("audio_feedback")
         val AUDIO_FEEDBACK_VOLUME = floatPreferencesKey("audio_feedback_volume")
         val RECORDING_AUDIO_SOURCE = stringPreferencesKey("recording_audio_source")
@@ -91,6 +94,7 @@ class SettingsRepository(private val dataStore: DataStore<Preferences>) {
                     this[ACKNOWLEDGED_POLICIES]?.let { json.decodeFromString(listSerializer, it) }
                         ?: defaults.acknowledgedCloudPolicies,
                 languageHint = LanguageHints.normalize(this[LANGUAGE_HINT] ?: defaults.languageHint),
+                removeFillers = this[REMOVE_FILLERS] ?: defaults.removeFillers,
                 customWords =
                     this[CUSTOM_WORDS]?.let { json.decodeFromString(listSerializer, it) }
                         ?: defaults.customWords,
@@ -130,6 +134,7 @@ class SettingsRepository(private val dataStore: DataStore<Preferences>) {
                 buttonAlpha = look.second,
                 buttonLookVersion = look.third,
                 hapticFeedback = this[HAPTIC_FEEDBACK] ?: defaults.hapticFeedback,
+                insertIntoPasswordFields = this[INSERT_INTO_PASSWORD_FIELDS] ?: defaults.insertIntoPasswordFields,
                 buttonPosX = this[BUTTON_POS_X] ?: defaults.buttonPosX,
                 buttonPosY = this[BUTTON_POS_Y] ?: defaults.buttonPosY,
             )
@@ -142,6 +147,7 @@ class SettingsRepository(private val dataStore: DataStore<Preferences>) {
             this[ACKNOWLEDGED_POLICIES] =
                 json.encodeToString(listSerializer, s.acknowledgedCloudPolicies)
             this[LANGUAGE_HINT] = LanguageHints.normalize(s.languageHint)
+            this[REMOVE_FILLERS] = s.removeFillers
             this[CUSTOM_WORDS] = json.encodeToString(listSerializer, s.customWords)
             this[WORD_THRESHOLD] = s.wordCorrectionThreshold
             if (s.customFillerWords == null) {
@@ -173,6 +179,7 @@ class SettingsRepository(private val dataStore: DataStore<Preferences>) {
             this[BUTTON_ALPHA] = s.buttonAlpha
             this[BUTTON_LOOK_VERSION] = s.buttonLookVersion
             this[HAPTIC_FEEDBACK] = s.hapticFeedback
+            this[INSERT_INTO_PASSWORD_FIELDS] = s.insertIntoPasswordFields
             this[BUTTON_POS_X] = s.buttonPosX
             this[BUTTON_POS_Y] = s.buttonPosY
         }

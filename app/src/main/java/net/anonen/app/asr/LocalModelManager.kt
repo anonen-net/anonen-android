@@ -12,6 +12,7 @@ import okhttp3.Request
 import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 sealed interface ModelState {
@@ -20,6 +21,8 @@ sealed interface ModelState {
     data class Downloading(val progress: Float) : ModelState
 
     data object Ready : ModelState
+
+    data object Deleting : ModelState
 
     data class Error(val message: String) : ModelState
 }
@@ -31,11 +34,14 @@ class LocalModelManager(
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(5, TimeUnit.MINUTES)
             .build(),
+    private val deleteFiles: (File) -> Unit = { it.deleteRecursively() },
 ) {
     constructor(context: Context, httpClient: OkHttpClient) :
         this(File(context.filesDir, "models"), httpClient)
 
     private val stateFlows = mutableMapOf<String, MutableStateFlow<ModelState>>()
+
+    private val deleting: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     private var engine: LocalAsrEngine? = null
     private var engineDir: File? = null
@@ -83,6 +89,7 @@ class LocalModelManager(
         info.files.joinToString("\n") { "${it.fileName} ${it.sha256}" }
 
     fun isReady(info: LocalModelInfo): Boolean {
+        if (info.id in deleting) return false
         val dir = modelDir(info)
 
         if (info.files.any { File(dir, it.fileName).length() <= 0L }) return false
@@ -90,7 +97,9 @@ class LocalModelManager(
         return runCatching { stampFile(info).readText() }.getOrNull() == expectedStamp(info)
     }
 
-    fun stateFlow(info: LocalModelInfo): StateFlow<ModelState> =
+    fun stateFlow(info: LocalModelInfo): StateFlow<ModelState> = mutableState(info)
+
+    private fun mutableState(info: LocalModelInfo): MutableStateFlow<ModelState> =
         synchronized(stateFlows) {
             stateFlows.getOrPut(info.id) {
                 MutableStateFlow(if (isReady(info)) ModelState.Ready else ModelState.NotDownloaded)
@@ -155,12 +164,17 @@ class LocalModelManager(
     }
 
     fun delete(info: LocalModelInfo) {
-        val dir = modelDir(info)
-
-        releaseEngine()
-        dir.deleteRecursively()
-        synchronized(stateFlows) {
-            stateFlows[info.id]?.value = ModelState.NotDownloaded
+        val state = mutableState(info)
+        deleting += info.id
+        state.value = ModelState.Deleting
+        try {
+            synchronized(this) {
+                releaseEngine()
+                deleteFiles(modelDir(info))
+            }
+        } finally {
+            deleting -= info.id
+            state.value = if (isReady(info)) ModelState.Ready else ModelState.NotDownloaded
         }
         DiagnosticsLog.log("ローカルモデル削除: ${info.id}")
     }

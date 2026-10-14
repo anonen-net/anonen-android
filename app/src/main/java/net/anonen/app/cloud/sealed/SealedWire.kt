@@ -34,6 +34,7 @@ object SealedWire {
         model: String,
         language: String?,
         audio: ByteArray,
+        removeFillers: Boolean = false,
     ): SealedEnvelope {
         require(publicKey.size == PUBLIC_KEY_BYTES) {
             "public key must be $PUBLIC_KEY_BYTES bytes"
@@ -47,6 +48,8 @@ object SealedWire {
                 put("response_key", b64UrlNoPad(responseKey))
                 put("model", model)
                 if (!language.isNullOrBlank() && language != "auto") put("language", language)
+
+                if (removeFillers) put("remove_fillers", true)
             }.toString().toByteArray(Charsets.UTF_8)
         if (header.size > MAX_HEADER_BYTES) throw SealedException("header too large")
 

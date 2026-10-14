@@ -249,8 +249,9 @@ private val timeFormat = SimpleDateFormat("M/d HH:mm", Locale.JAPAN)
 private val SMALL_BUTTON_HEIGHT = 32.dp
 private val SMALL_BUTTON_PADDING = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
 
-private fun formatMs(ms: Int): String {
+internal fun formatMs(ms: Int): String {
     val total = (ms / 1000).coerceAtLeast(0)
+    if (total >= 3600) return "%d:%02d:%02d".format(total / 3600, total % 3600 / 60, total % 60)
     return "%d:%02d".format(total / 60, total % 60)
 }
 

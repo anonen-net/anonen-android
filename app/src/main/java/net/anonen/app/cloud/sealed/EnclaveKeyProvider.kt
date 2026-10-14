@@ -7,6 +7,8 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import net.anonen.app.cloud.ANONEN_CLIENT_HEADER
+import net.anonen.app.cloud.MAX_SMALL_RESPONSE_BYTES
+import net.anonen.app.cloud.stringAtMost
 import net.anonen.app.core.DiagnosticsLog
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -58,8 +60,8 @@ class EnclaveKeyProvider(
         return if (now < c.reuseUntilSeconds && now < c.enclave.expiresAtSeconds) c.enclave else null
     }
 
-    private fun fetchAndCache(): VerifiedEnclave? {
-        val fresh = fetchAndVerify() ?: return null
+    private fun fetchAndCache(updatesRefusal: Boolean): VerifiedEnclave? {
+        val fresh = fetchAndVerify(updatesRefusal) ?: return null
         cached.set(Cached(fresh, nowSeconds() + REUSE_SECONDS))
         return fresh
     }
@@ -83,18 +85,19 @@ class EnclaveKeyProvider(
     override fun prefetch() {
         val left = cachedRemainingSeconds()
         if (left != null && left > REFRESH_MARGIN_SECONDS) return
-        fetchAndCache()
+
+        fetchAndCache(updatesRefusal = false)
     }
 
-    override fun acquire(): VerifiedEnclave? = cachedValid() ?: fetchAndCache()
+    override fun acquire(): VerifiedEnclave? = cachedValid() ?: fetchAndCache(updatesRefusal = true)
 
     override fun reacquire(): VerifiedEnclave? {
         cached.set(null)
-        return fetchAndCache()
+        return fetchAndCache(updatesRefusal = true)
     }
 
-    private fun fetchAndVerify(): VerifiedEnclave? {
-        unknownImage = false
+    private fun fetchAndVerify(updatesRefusal: Boolean): VerifiedEnclave? {
+        if (updatesRefusal) unknownImage = false
         if (nowSeconds() < unsupportedUntilSeconds) return null
         val nonce = SealedWire.newClientNonce()
         val body =
@@ -131,8 +134,9 @@ class EnclaveKeyProvider(
                 result.enclave
             }
             is AttestationResult.Rejected -> {
-                unknownImage = result.rejectedOnlyForUnknownImage()
-                if (unknownImage) {
+                val onlyUnknownImage = result.rejectedOnlyForUnknownImage()
+                if (updatesRefusal) unknownImage = onlyUnknownImage
+                if (onlyUnknownImage) {
                     DiagnosticsLog.log("封緘: このイメージを受理リストに持っていない — アプリが古い")
                 } else {
                     DiagnosticsLog.log("封緘: 検証 NG（${result.failedLabels()}）— この鍵では封じない")
@@ -178,7 +182,7 @@ class EnclaveKeyProvider(
         if (identify && clientId.isNotEmpty()) builder.header(ANONEN_CLIENT_HEADER, clientId)
         val response = http.newCall(builder.build()).execute()
         response.use {
-            val text = it.body?.string().orEmpty()
+            val text = it.body.stringAtMost(MAX_SMALL_RESPONSE_BYTES)
 
             if (it.code == 501 || it.code == 404) throw AttestationUnsupported()
             check(it.isSuccessful) { "HTTP ${it.code}" }

@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -55,6 +56,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -68,6 +70,7 @@ import net.anonen.app.AnonenApp
 import net.anonen.app.BuildConfig
 import net.anonen.app.R
 import net.anonen.app.cloud.CloudAccountStatus
+import net.anonen.app.cloud.wordsGroupFor
 import net.anonen.app.core.DiagnosticsReport
 import net.anonen.app.core.HistoryRetention
 import net.anonen.app.core.LanguageHints
@@ -103,7 +106,7 @@ internal fun SettingsScreen() {
         dev.SettingsSection(DevSettingsSlot.APP_SECTION_END, app, settings, ::update)
 
         UsageSection(app, scope)
-        SupportSection(app, settings)
+        SupportSection(app, settings, ::update)
         AboutSection()
 
         HowToUseSection(settings)
@@ -275,19 +278,33 @@ private fun LanguageSection(
         } else {
             null
         }
-    val hidden = cloudInfo != null && cloudInfo.supportedLanguages.isEmpty()
-    if (hidden) return
+
+    val group = wordsGroupFor(cloudInfo)
+    if (group.isEmpty) return
 
     SettingsGroup("言葉") {
-        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-            LanguageHintDropdown(
-                selectedCode = settings.languageHint,
-                allowedCodes = cloudInfo?.supportedLanguages,
-                onSelect = { code -> update { it.copy(languageHint = code) } },
-            )
+        if (group.languageChoice) {
+            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                LanguageHintDropdown(
+                    selectedCode = settings.languageHint,
+                    allowedCodes = cloudInfo?.supportedLanguages,
+                    onSelect = { code -> update { it.copy(languageHint = code) } },
+                )
+            }
+        }
+
+        if (group.fillerSwitch) {
+            if (group.languageChoice) SettingDivider()
+            SwitchRow(
+                label = REMOVE_FILLERS_LABEL,
+                checked = settings.removeFillers,
+                icon = scissorsIcon,
+            ) { v -> update { it.copy(removeFillers = v) } }
         }
     }
 }
+
+internal const val REMOVE_FILLERS_LABEL = "「えー」「あの」を減らす"
 
 @Composable
 private fun SoundSection(
@@ -424,8 +441,14 @@ private fun HistorySection(
 private fun SupportSection(
     app: AnonenApp,
     settings: AnonenSettings,
+    update: (transform: (AnonenSettings) -> AnonenSettings) -> Unit,
 ) {
     SettingsGroup("うまくいかないとき") {
+        SwitchRow(
+            label = "パスワードの欄にも入れる",
+            checked = settings.insertIntoPasswordFields,
+        ) { v -> update { it.copy(insertIntoPasswordFields = v) } }
+        SettingDivider()
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
             SupportActions(app, settings)
         }
@@ -741,6 +764,7 @@ internal fun SwitchRow(
     label: String,
     checked: Boolean,
     enabled: Boolean = true,
+    icon: ImageVector? = null,
     onChange: (Boolean) -> Unit,
 ) {
     Row(
@@ -751,6 +775,15 @@ internal fun SwitchRow(
                 .toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChange)
                 .padding(horizontal = 16.dp, vertical = 10.dp),
     ) {
+        if (icon != null) {
+            Icon(
+                icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(SWITCH_ICON_SIZE),
+            )
+            Spacer(Modifier.width(8.dp))
+        }
         Text(
             label,
             modifier = Modifier.weight(1f),
@@ -773,6 +806,8 @@ internal fun SwitchRow(
         )
     }
 }
+
+private val SWITCH_ICON_SIZE = 16.dp
 
 @Composable
 internal fun DebouncedTextField(
@@ -857,6 +892,6 @@ internal fun LogoutConfirmDialog(
         primary = DialogButton("ログアウトしない", onKeep),
         secondary = DialogButton("ログアウトする", onLogout, filled = false, destructive = true),
     ) {
-        Text("ログインし直すには、メールの数字が要ります", style = MaterialTheme.typography.bodyMedium)
+        Text("ログインし直すには、メールの確認コードが要ります", style = MaterialTheme.typography.bodyMedium)
     }
 }

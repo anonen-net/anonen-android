@@ -221,7 +221,7 @@ internal fun CloudSignInForm(
                     otpCode = v.filter { it.isDigit() }.take(6)
                     if (shouldAutoVerify(otpCode, lastTried, loading)) verify()
                 },
-                label = { Text("メールの 6 桁の数字") },
+                label = { Text("確認コード（6 桁）") },
                 enabled = !loading,
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -260,7 +260,7 @@ internal fun CloudSignInForm(
                         color = MaterialTheme.colorScheme.onPrimary,
                     )
                 } else {
-                    Text(if (operatorLogin) "ログイン" else "数字をメールで受け取る")
+                    Text(if (operatorLogin) "ログイン" else "メールで確認コードを受け取る")
                 }
             }
         } else {

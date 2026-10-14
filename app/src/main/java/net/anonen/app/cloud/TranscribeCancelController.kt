@@ -4,26 +4,34 @@ import okhttp3.Call
 import java.util.concurrent.CopyOnWriteArraySet
 
 class TranscribeCancelController {
+    enum class Reason {
+        USER,
+
+        LOST_ACCESS,
+    }
+
     @Volatile
-    private var cancelled = false
+    private var reason: Reason? = null
 
     private val inFlight = CopyOnWriteArraySet<Call>()
 
-    val isCancelled: Boolean get() = cancelled
+    val isCancelled: Boolean get() = reason != null
+
+    val cancelReason: Reason? get() = reason
 
     fun begin() {
-        cancelled = false
+        reason = null
         inFlight.clear()
     }
 
-    fun requestCancel() {
-        cancelled = true
+    fun requestCancel(reason: Reason = Reason.USER) {
+        if (this.reason != Reason.LOST_ACCESS) this.reason = reason
         inFlight.forEach { runCatching { it.cancel() } }
     }
 
     fun register(call: Call) {
         inFlight.add(call)
-        if (cancelled) runCatching { call.cancel() }
+        if (isCancelled) runCatching { call.cancel() }
     }
 
     fun unregister(call: Call) {

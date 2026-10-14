@@ -1,6 +1,7 @@
 package net.anonen.app.history
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -17,11 +18,19 @@ import net.anonen.app.core.AccessControl
 import net.anonen.app.core.DiagnosticsLog
 import net.anonen.app.inject.DeliveryOutcome
 import net.anonen.app.pipeline.TranscriptionPipeline
+import net.anonen.app.record.WavEncoder
 
 class Retranscriber(
     private val app: AnonenApp,
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val crashGuard =
+        CoroutineExceptionHandler { _, e ->
+            app.logThrowable("retranscribe-scope", e)
+            _message.value = RetranscribeRules.INTERNAL_ERROR
+            _runningEntryId.value = null
+        }
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main + crashGuard)
 
     private val _runningEntryId = MutableStateFlow<Long?>(null)
 
@@ -50,7 +59,7 @@ class Retranscriber(
 
     private fun cancelRunning() {
         if (_runningEntryId.value == null) return
-        runningCancel?.requestCancel()
+        runningCancel?.requestCancel(TranscribeCancelController.Reason.LOST_ACCESS)
         runningJob?.cancel()
         _message.value = RetranscribeRules.NEEDS_ACCESS
     }
@@ -87,9 +96,16 @@ class Retranscriber(
                         return@launch
                     }
 
+                    val limit = app.recordingLimits.limitSecondsFor(app.settingsRepository.current().selectedModel)
+                    if (RetranscribeRules.tooLongForCloud(WavEncoder.durationMs(wav), limit)) {
+                        DiagnosticsLog.log("再転写を止めた: 録音がクラウドの上限 ${limit}s より長い")
+                        _message.value = RetranscribeRules.TOO_LONG
+                        return@launch
+                    }
+
                     lastModelUsed = null
 
-                    launch { runCatching { app.enclaveKeys.prefetch() } }
+                    launch(Dispatchers.IO) { runCatching { app.enclaveKeys.prefetch() } }
                     val startedAt = android.os.SystemClock.elapsedRealtime()
                     val outcome = pipeline(appendAsNewEntry, cancel).run(wav)
                     val elapsed = android.os.SystemClock.elapsedRealtime() - startedAt
@@ -143,7 +159,7 @@ class Retranscriber(
             }
         },
         modelNameResolver = { s -> EngineProvider.resolvedModelName(s) },
-        onAsrMeasured = { modelId, asrMs -> app.modelStats.record(modelId, asrMs) },
+        onAsrMeasured = { modelId, asrMs, audioMs -> app.modelStats.record(modelId, asrMs, audioMs) },
         isCancelled = { cancel.isCancelled },
         savesUntranscribedAudio = appendAsNewEntry,
     )

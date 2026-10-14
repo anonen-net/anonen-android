@@ -12,6 +12,7 @@ import net.anonen.app.core.TranscriptionResult
 import net.anonen.app.dev.DevFeaturesProvider
 import net.anonen.app.history.LegacyHistoryLabels
 import net.anonen.app.inject.DeliveryOutcome
+import net.anonen.app.record.WavEncoder
 import net.anonen.app.settings.AnonenSettings
 import net.anonen.app.textproc.applyCustomWords
 import net.anonen.app.textproc.filterTranscriptionOutput
@@ -31,7 +32,10 @@ sealed interface PipelineOutcome {
         val audioSavedToHistory: Boolean = false,
     ) : PipelineOutcome
 
-    data class Cancelled(val audioSavedToHistory: Boolean) : PipelineOutcome
+    data class Cancelled(
+        val audioSavedToHistory: Boolean,
+        val byUser: Boolean = true,
+    ) : PipelineOutcome
 }
 
 class TranscriptionPipeline(
@@ -42,9 +46,11 @@ class TranscriptionPipeline(
         suspend (text: String, durationMs: Long, retention: HistoryRetention, wavBytes: ByteArray) -> Unit =
         { _, _, _, _ -> },
     private val modelNameResolver: (AnonenSettings) -> String = { it.selectedModel },
-    private val onAsrMeasured: suspend (modelId: String, asrMs: Long) -> Unit = { _, _ -> },
+    private val onAsrMeasured: suspend (modelId: String, asrMs: Long, audioMs: Long) -> Unit = { _, _, _ -> },
     private val isCancelled: () -> Boolean = { false },
     private val savesUntranscribedAudio: Boolean = true,
+    private val lostAccess: () -> Boolean = { false },
+    private val onResponse: () -> Unit = {},
 ) {
     suspend fun run(wavBytes: ByteArray): PipelineOutcome {
         val settings = settingsProvider()
@@ -52,10 +58,18 @@ class TranscriptionPipeline(
 
         return when (val result = transcribe(settings, wavBytes, languageHint)) {
             is TranscriptionResult.Failure -> {
+                if (lostAccess()) return stoppedForLostAccess(settings, wavBytes)
+
                 if (isCancelled()) {
                     val saved = preserveCancelledAudio(settings, wavBytes)
                     DiagnosticsLog.log("転写キャンセル（ユーザー操作）履歴保存=$saved")
                     return PipelineOutcome.Cancelled(saved)
+                }
+
+                val partial = result.error.partialText
+                if (!partial.isNullOrBlank() && savesUntranscribedAudio && !settings.historyEnabled) {
+                    DiagnosticsLog.log("一部だけ文字にできず、録音も残せない → 文字にできた分を入れる")
+                    return finishWithText(settings, partial, 0L, wavBytes, languageHint)
                 }
                 DiagnosticsLog.log(
                     "転写失敗 ${result.error.kind} http=${result.error.httpStatus ?: "-"}: " +
@@ -65,39 +79,70 @@ class TranscriptionPipeline(
                 PipelineOutcome.AsrFailed(error, saved)
             }
             is TranscriptionResult.Success -> {
-                var text =
-                    applyCustomWords(
-                        result.text,
-                        settings.customWords,
-                        settings.wordCorrectionThreshold,
-                    )
-                text =
-                    filterTranscriptionOutput(
-                        text,
-                        languageHint.ifBlank { "auto" },
-                        settings.customFillerWords,
-                    )
-                if (text.isBlank()) {
-                    DiagnosticsLog.log("転写は空（補正後に文字なし。元 ${result.text.length}文字）")
-
-                    val saved = preserveEmptyAudio(settings, wavBytes)
-                    DiagnosticsLog.log("転写が空: 履歴保存=$saved")
-                    return PipelineOutcome.EmptyTranscription(saved)
-                }
-                if (settings.appendTrailingSpace) text += " "
-
-                val delivery = deliver(text)
-                DiagnosticsLog.log("転写成功 ${text.length}文字 → 配送=$delivery")
-                if (settings.historyEnabled) {
-                    runCatching {
-                        saveHistory(text, result.durationMs, settings.historyRetention, wavBytes)
-                    }.onFailure {
-                        DiagnosticsLog.log("履歴に残せず（${it.javaClass.simpleName}）配送は成功")
-                    }
-                }
-                PipelineOutcome.Delivered(delivery, text)
+                if (lostAccess()) return stoppedForLostAccess(settings, wavBytes)
+                finishWithText(settings, result.text, result.durationMs, wavBytes, languageHint)
             }
         }
+    }
+
+    private suspend fun finishWithText(
+        settings: AnonenSettings,
+        rawText: String,
+        durationMs: Long,
+        wavBytes: ByteArray,
+        languageHint: String,
+    ): PipelineOutcome {
+        var text =
+            applyCustomWords(
+                rawText,
+                settings.customWords,
+                settings.wordCorrectionThreshold,
+            )
+        text =
+            filterTranscriptionOutput(
+                text,
+                languageHint.ifBlank { "auto" },
+                settings.customFillerWords,
+            )
+        if (text.isBlank()) {
+            DiagnosticsLog.log("転写は空（補正後に文字なし。元 ${rawText.length}文字）")
+
+            val saved = preserveEmptyAudio(settings, wavBytes)
+            DiagnosticsLog.log("転写が空: 履歴保存=$saved")
+            return PipelineOutcome.EmptyTranscription(saved)
+        }
+        if (settings.appendTrailingSpace) text += " "
+
+        val delivery = deliver(text)
+        DiagnosticsLog.log("転写成功 ${text.length}文字 → 配送=$delivery")
+
+        if (settings.historyEnabled && delivery != DeliveryOutcome.BLOCKED_PASSWORD) {
+            runCatching {
+                saveHistory(text, durationMs, settings.historyRetention, wavBytes)
+            }.onFailure {
+                DiagnosticsLog.log("履歴に残せず（${it.javaClass.simpleName}）配送は成功")
+            }
+        }
+        return PipelineOutcome.Delivered(delivery, text)
+    }
+
+    suspend fun preserveCancelled(wavBytes: ByteArray): Boolean = preserveCancelledAudio(settingsProvider(), wavBytes)
+
+    suspend fun preserveFailed(wavBytes: ByteArray): Boolean {
+        val settings = settingsProvider()
+        if (!savesUntranscribedAudio || !settings.historyEnabled) return false
+        return runCatching { saveHistory(FAILED_HISTORY_TEXT, 0L, settings.historyRetention, wavBytes) }.isSuccess
+    }
+
+    private suspend fun stoppedForLostAccess(
+        settings: AnonenSettings,
+        wavBytes: ByteArray,
+    ): PipelineOutcome {
+        val saved =
+            savesUntranscribedAudio && settings.historyEnabled &&
+                runCatching { saveHistory(FAILED_HISTORY_TEXT, 0L, settings.historyRetention, wavBytes) }.isSuccess
+        DiagnosticsLog.log("転写を止めた（認可を失った）入れない・履歴保存=$saved")
+        return PipelineOutcome.Cancelled(saved, byUser = false)
     }
 
     private suspend fun preserveCancelledAudio(
@@ -149,7 +194,7 @@ class TranscriptionPipeline(
         wavBytes: ByteArray,
         languageHint: String,
     ): TranscriptionResult {
-        val engine = engineFactory(settings)
+        val engine = withContext(Dispatchers.IO) { engineFactory(settings) }
         val modelName = modelNameResolver(settings)
         DiagnosticsLog.log("転写リクエスト model=$modelName wav=${wavBytes.size}B")
 
@@ -158,11 +203,12 @@ class TranscriptionPipeline(
             withContext(Dispatchers.IO) {
                 engine.transcribe(TranscriptionRequest(wavBytes, languageHint, isCancelled))
             }
+        onResponse()
         val asrMs = android.os.SystemClock.elapsedRealtime() - asrStart
         DiagnosticsLog.log("転写応答 ${asrMs}ms")
 
         if (result is TranscriptionResult.Success) {
-            onAsrMeasured(settings.selectedModel, asrMs)
+            if (result.text.isNotBlank()) onAsrMeasured(settings.selectedModel, asrMs, WavEncoder.durationMs(wavBytes))
             return result
         }
 
@@ -183,7 +229,9 @@ class TranscriptionPipeline(
         val fbMs = android.os.SystemClock.elapsedRealtime() - fbStart
         DiagnosticsLog.log("フォールバック応答 ${fbMs}ms")
 
-        if (fbResult is TranscriptionResult.Success) onAsrMeasured(fallbackId, fbMs)
+        if (fbResult is TranscriptionResult.Success && fbResult.text.isNotBlank()) {
+            onAsrMeasured(fallbackId, fbMs, WavEncoder.durationMs(wavBytes))
+        }
         return fbResult
     }
 

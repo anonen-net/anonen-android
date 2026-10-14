@@ -31,13 +31,22 @@ object PcmAudioProcessor {
         eq: SpectralMatchEq? = SpectralMatchEq(),
     ): ByteArray? {
         if (speechPcm16k.isEmpty()) return null
-        val afterEq =
-            if (eq != null) {
-                eq.process(speechPcm16k.toShortSamples()).toPcmBytes()
-            } else {
-                speechPcm16k
-            }
-        return padShortRecording(normalizeLoudness(afterEq))
+        return padShortRecording(equalizeAndNormalize(speechPcm16k, eq))
+    }
+
+    private fun equalizeAndNormalize(
+        pcm: ByteArray,
+        eq: SpectralMatchEq?,
+    ): ByteArray = processedSamples(pcm, eq)?.toPcmBytes() ?: pcm
+
+    private fun processedSamples(
+        pcm: ByteArray,
+        eq: SpectralMatchEq?,
+    ): ShortArray? {
+        val samples = pcm.toShortSamples()
+        val afterEq = eq?.process(samples) ?: samples
+        val changed = normalizeInPlace(afterEq)
+        return if (eq == null && !changed) null else afterEq
     }
 
     fun prepareForAsr(
@@ -57,18 +66,16 @@ object PcmAudioProcessor {
         val resampled = resamplePcm16Mono(evenPcm, inputSampleRate, TARGET_SAMPLE_RATE)
         val vadFiltered = trimSilence(resampled, TARGET_SAMPLE_RATE, vad)
         if (vadFiltered.isEmpty()) return null
-        val afterEq =
-            if (eq != null) {
-                eq.process(vadFiltered.toShortSamples()).toPcmBytes()
-            } else {
-                vadFiltered
-            }
-        return padShortRecording(normalizeLoudness(afterEq))
+        return padShortRecording(equalizeAndNormalize(vadFiltered, eq))
     }
 
     fun normalizeLoudness(pcmData: ByteArray): ByteArray {
         val samples = pcmData.toShortSamples()
-        if (samples.isEmpty()) return pcmData
+        return if (normalizeInPlace(samples)) samples.toPcmBytes() else pcmData
+    }
+
+    private fun normalizeInPlace(samples: ShortArray): Boolean {
+        if (samples.isEmpty()) return false
 
         var sumSquares = 0.0
         for (sample in samples) {
@@ -76,18 +83,17 @@ object PcmAudioProcessor {
             sumSquares += value * value
         }
         val rms = sqrt(sumSquares / samples.size)
-        if (rms <= 0.0) return pcmData
+        if (rms <= 0.0) return false
 
         val targetRms = FULL_SCALE * 10.0.pow(TARGET_RMS_DBFS / 20.0)
         val gain = (targetRms / rms).coerceIn(1.0, MAX_NORMALIZE_GAIN)
-        if (gain <= 1.0) return pcmData
+        if (gain <= 1.0) return false
 
         val limit = FULL_SCALE * PEAK_CEILING
-        val out = ShortArray(samples.size)
         for (i in samples.indices) {
-            out[i] = (limit * tanh(samples[i] * gain / limit)).roundToShort()
+            samples[i] = (limit * tanh(samples[i] * gain / limit)).roundToShort()
         }
-        return out.toPcmBytes()
+        return true
     }
 
     fun resamplePcm16Mono(

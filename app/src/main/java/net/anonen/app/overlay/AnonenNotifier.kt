@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.graphics.drawable.Icon
+import android.os.Build
 import net.anonen.app.R
 import net.anonen.app.ui.MainActivity
 
@@ -73,12 +74,17 @@ class AnonenNotifier(private val context: Context) {
         requestCode: Int,
         intent: Intent,
         label: String,
-    ): Notification.Action =
-        Notification.Action.Builder(
-            Icon.createWithResource(context, R.drawable.ic_notification),
-            label,
-            PendingIntent.getService(context, requestCode, intent, PendingIntent.FLAG_IMMUTABLE),
-        ).build()
+        requiresUnlock: Boolean = false,
+    ): Notification.Action {
+        val builder =
+            Notification.Action.Builder(
+                Icon.createWithResource(context, R.drawable.ic_notification),
+                label,
+                PendingIntent.getService(context, requestCode, intent, PendingIntent.FLAG_IMMUTABLE),
+            )
+        if (requiresUnlock && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) builder.setAuthenticationRequired(true)
+        return builder.build()
+    }
 
     fun canPost(): Boolean =
         manager.areNotificationsEnabled() &&
@@ -100,8 +106,10 @@ class AnonenNotifier(private val context: Context) {
                     requestCode = 3,
                     intent = FloatingButtonService.undoDiscardIntent(context),
                     label = FeedbackAction.UNDO_DISCARD.label.orEmpty(),
+                    requiresUnlock = true,
                 ),
             )
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) builder.setVisibility(Notification.VISIBILITY_SECRET)
         }
         manager.notify(DISCARDED_NOTIFICATION_ID, builder.build())
     }

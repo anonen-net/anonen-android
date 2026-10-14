@@ -25,3 +25,21 @@ internal fun isBlockedPasswordNode(
     if (!isPassword) return false
     return !isVisiblePasswordInputType(inputType)
 }
+
+internal enum class PasswordVerdict {
+    NOT_PASSWORD,
+
+    BLOCK,
+
+    ALLOWED_BY_SETTING,
+}
+
+internal fun passwordVerdict(
+    allowPasswordFields: Boolean,
+    detected: Boolean,
+): PasswordVerdict =
+    when {
+        !detected -> PasswordVerdict.NOT_PASSWORD
+        allowPasswordFields -> PasswordVerdict.ALLOWED_BY_SETTING
+        else -> PasswordVerdict.BLOCK
+    }

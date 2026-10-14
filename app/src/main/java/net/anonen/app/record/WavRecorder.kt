@@ -8,7 +8,6 @@ import android.media.audiofx.AutomaticGainControl
 import android.os.SystemClock
 import net.anonen.app.core.DiagnosticsLog
 import net.anonen.app.core.RecordingAudioSource
-import java.io.ByteArrayOutputStream
 import kotlin.concurrent.thread
 
 class RecordingResult(
@@ -19,8 +18,6 @@ class RecordingResult(
 class WavRecorder(
     private val outputSampleRate: Int = PcmAudioProcessor.TARGET_SAMPLE_RATE,
 ) {
-    @Volatile
-    private var recording = false
     private var audioRecord: AudioRecord? = null
     private var agc: AutomaticGainControl? = null
     private var readerThread: Thread? = null
@@ -29,8 +26,8 @@ class WavRecorder(
     @Volatile
     private var drainUntilMs: Long = 0L
 
-    private val allPcm16kBuffer = ByteArrayOutputStream()
-    private val speechPcm16kBuffer = ByteArrayOutputStream()
+    @Volatile
+    private var capture: Capture? = null
 
     var audioSource: RecordingAudioSource = RecordingAudioSource.MIC
     var spectralEqEnabled: Boolean = true
@@ -45,11 +42,13 @@ class WavRecorder(
 
     var onAutoStopWarning: (() -> Unit)? = null
 
-    val isRecording: Boolean get() = recording
+    var onCaptureLost: (() -> Unit)? = null
+
+    val isRecording: Boolean get() = capture?.active == true
 
     @SuppressLint("MissingPermission")
     fun start(): Boolean {
-        if (recording) return false
+        if (isRecording) return false
 
         val prepared = createAudioRecord(audioSource) ?: return false
         val record = prepared.record
@@ -65,11 +64,10 @@ class WavRecorder(
             return false
         }
 
-        allPcm16kBuffer.reset()
-        speechPcm16kBuffer.reset()
+        val cap = Capture()
+        capture = cap
         drainUntilMs = 0L
         audioRecord = record
-        recording = true
         val capturedMaxSeconds = maxSeconds
         DiagnosticsLog.log(
             "録音 source=${prepared.source} rate=${captureSampleRate}Hz " +
@@ -82,88 +80,99 @@ class WavRecorder(
 
         readerThread =
             thread(name = "wav-reader") {
-                val downsampler = StreamingDownsampler(captureSampleRate, outputSampleRate)
-                val smoothedVad = SmoothedVad(capturedVad)
-                smoothedVad.reset()
-                val frameAccum = ShortArray(FRAME_SAMPLES)
-                var framePos = 0
+                try {
+                    val downsampler = StreamingDownsampler(captureSampleRate, outputSampleRate)
+                    val smoothedVad = SmoothedVad(capturedVad)
+                    smoothedVad.reset()
+                    val frameAccum = ShortArray(FRAME_SAMPLES)
+                    var framePos = 0
 
-                fun feedSamples(samples: ShortArray) {
-                    for (s in samples) {
-                        writeShort(allPcm16kBuffer, s)
-                        frameAccum[framePos++] = s
-                        if (framePos == FRAME_SAMPLES) {
-                            val emitted = smoothedVad.feedFrame(frameAccum.copyOf())
-                            for (frame in emitted) {
-                                writeFrame(speechPcm16kBuffer, frame)
+                    fun feedSamples(samples: ShortArray) {
+                        cap.all.append(samples)
+                        for (s in samples) {
+                            frameAccum[framePos++] = s
+                            if (framePos == FRAME_SAMPLES) {
+                                val emitted = smoothedVad.feedFrame(frameAccum.copyOf())
+                                for (frame in emitted) {
+                                    cap.speech.append(frame)
+                                }
+                                framePos = 0
                             }
-                            framePos = 0
                         }
                     }
-                }
 
-                fun processChunk(
-                    chunk: ByteArray,
-                    bytesRead: Int,
-                ) {
-                    val inputSamples = bytesToShorts(chunk, bytesRead)
-                    val resampled =
-                        if (downsampler.isPassthrough) {
-                            inputSamples
+                    fun processChunk(
+                        chunk: ByteArray,
+                        bytesRead: Int,
+                    ) {
+                        val inputSamples = bytesToShorts(chunk, bytesRead)
+                        val resampled =
+                            if (downsampler.isPassthrough) {
+                                inputSamples
+                            } else {
+                                downsampler.process(inputSamples)
+                            }
+                        feedSamples(resampled)
+                    }
+
+                    val chunk = ByteArray(CHUNK_BYTES)
+                    while (cap.active) {
+                        val n = record.read(chunk, 0, chunk.size)
+                        if (n > 0) {
+                            processChunk(chunk, n)
+                            when (limitTracker.onBuffered(cap.all.size)) {
+                                RecordingLimitTracker.Event.WARNING -> {
+                                    DiagnosticsLog.log(
+                                        "録音上限まで残り約" +
+                                            "${RecordingLimitTracker.WARNING_LEAD_SECONDS}秒 → 停止前警告",
+                                    )
+                                    onAutoStopWarning?.invoke()
+                                }
+                                RecordingLimitTracker.Event.AUTO_STOP -> {
+                                    DiagnosticsLog.log(
+                                        "録音上限 ${capturedMaxSeconds}s 到達 → 自動停止（転写へ）",
+                                    )
+                                    cap.active = false
+                                    onAutoStop?.invoke()
+                                }
+                                null -> Unit
+                            }
+                        } else if (n < 0) {
+                            DiagnosticsLog.log("マイクの読み取りが失敗（$n）→ 止めて、ここまでを文字にする")
+                            cap.active = false
+
+                            if (capture === cap) onCaptureLost?.invoke()
+                        }
+                    }
+                    while (SystemClock.elapsedRealtime() < drainUntilMs) {
+                        val n =
+                            record.read(
+                                chunk,
+                                0,
+                                chunk.size,
+                                AudioRecord.READ_NON_BLOCKING,
+                            )
+                        if (n > 0) {
+                            processChunk(chunk, n)
                         } else {
-                            downsampler.process(inputSamples)
+                            Thread.sleep(DRAIN_POLL_MS)
                         }
-                    feedSamples(resampled)
-                }
-
-                val chunk = ByteArray(CHUNK_BYTES)
-                while (recording) {
-                    val n = record.read(chunk, 0, chunk.size)
-                    if (n > 0) {
-                        processChunk(chunk, n)
-                        when (limitTracker.onBuffered(allPcm16kBuffer.size().toLong())) {
-                            RecordingLimitTracker.Event.WARNING -> {
-                                DiagnosticsLog.log(
-                                    "録音上限まで残り約" +
-                                        "${RecordingLimitTracker.WARNING_LEAD_SECONDS}秒 → 停止前警告",
-                                )
-                                onAutoStopWarning?.invoke()
-                            }
-                            RecordingLimitTracker.Event.AUTO_STOP -> {
-                                DiagnosticsLog.log(
-                                    "録音上限 ${capturedMaxSeconds}s 到達 → 自動停止（転写へ）",
-                                )
-                                recording = false
-                                onAutoStop?.invoke()
-                            }
-                            null -> Unit
+                    }
+                    if (!downsampler.isPassthrough) {
+                        feedSamples(downsampler.finish())
+                    }
+                    if (framePos > 0) {
+                        for (i in framePos until FRAME_SAMPLES) frameAccum[i] = 0
+                        val emitted = smoothedVad.feedFrame(frameAccum.copyOf())
+                        for (frame in emitted) {
+                            cap.speech.append(frame)
                         }
-                    } else if (n < 0) {
-                        recording = false
                     }
-                }
-                while (SystemClock.elapsedRealtime() < drainUntilMs) {
-                    val n =
-                        record.read(
-                            chunk,
-                            0,
-                            chunk.size,
-                            AudioRecord.READ_NON_BLOCKING,
-                        )
-                    if (n > 0) {
-                        processChunk(chunk, n)
-                    } else {
-                        Thread.sleep(DRAIN_POLL_MS)
-                    }
-                }
-                if (!downsampler.isPassthrough) {
-                    feedSamples(downsampler.finish())
-                }
-                if (framePos > 0) {
-                    for (i in framePos until FRAME_SAMPLES) frameAccum[i] = 0
-                    val emitted = smoothedVad.feedFrame(frameAccum.copyOf())
-                    for (frame in emitted) {
-                        writeFrame(speechPcm16kBuffer, frame)
+                } catch (e: Throwable) {
+                    DiagnosticsLog.log("録音の取り込みが ${e.javaClass.simpleName} で止まった → ここまでを文字にする")
+                    if (cap.active) {
+                        cap.active = false
+                        if (capture === cap) onCaptureLost?.invoke()
                     }
                 }
             }
@@ -172,20 +181,25 @@ class WavRecorder(
 
     fun stop(): RecordingResult? {
         val t0 = SystemClock.elapsedRealtime()
-        val buffers = finishAndDrain(drain = true) ?: return null
+        val buffers = finishCapture(drain = true)?.drain() ?: return null
         return process(buffers, drainMs = SystemClock.elapsedRealtime() - t0)
     }
 
     fun cancel() {
-        finishAndDrain(drain = false)
+        finishCapture(drain = false)?.discard()
     }
 
-    fun stopAndHold(): HeldRecording? = finishAndDrain(drain = false)?.let { HeldRecording(it) }
+    fun stopAndHold(): HeldRecording? {
+        val cap = finishCapture(drain = false) ?: return null
 
-    fun finish(held: HeldRecording): RecordingResult = process(held.buffers, drainMs = 0L)
+        if (cap.all.size == 0L) return null
+        return HeldRecording(cap)
+    }
+
+    fun finish(held: HeldRecording): RecordingResult? = held.capture.drain()?.let { process(it, drainMs = 0L) }
 
     class HeldRecording internal constructor(
-        internal val buffers: DrainedBuffers,
+        internal val capture: Capture,
     )
 
     private fun process(
@@ -195,10 +209,17 @@ class WavRecorder(
         val t1 = SystemClock.elapsedRealtime()
         val eq = if (spectralEqEnabled) SpectralMatchEq() else null
 
-        val processedPcm = PcmAudioProcessor.postProcessSpeech(buffers.speechPcm, eq)
+        val speech = buffers.takeSpeech()
+        val processedPcm =
+            try {
+                PcmAudioProcessor.postProcessSpeech(speech, eq)
+            } catch (e: OutOfMemoryError) {
+                DiagnosticsLog.log("止めた後の加工でメモリが足りない（発話 ${speech.size}B）→ 加工せずに送る")
+                speech.takeIf { it.isNotEmpty() }
+            }
         val t2 = SystemClock.elapsedRealtime()
-        val rawWav = WavEncoder.pcm16ToWav(buffers.allPcm, outputSampleRate, 1)
         val processedWav = processedPcm?.let { WavEncoder.pcm16ToWav(it, outputSampleRate, 1) }
+        val rawWav = WavEncoder.pcm16ToWav(buffers.takeAll(), outputSampleRate, 1)
         val t3 = SystemClock.elapsedRealtime()
         DiagnosticsLog.log(
             "stop内訳 drain=${drainMs}ms EQ+norm=${t2 - t1}ms wav=${t3 - t2}ms 合計=${drainMs + t3 - t1}ms" +
@@ -208,12 +229,38 @@ class WavRecorder(
     }
 
     internal class DrainedBuffers(
-        val allPcm: ByteArray,
-        val speechPcm: ByteArray,
-    )
+        allPcm: ByteArray,
+        speechPcm: ByteArray,
+    ) {
+        private var allPcm: ByteArray? = allPcm
+        private var speechPcm: ByteArray? = speechPcm
+
+        fun takeAll(): ByteArray = checkNotNull(allPcm) { "録音はもう渡した" }.also { allPcm = null }
+
+        fun takeSpeech(): ByteArray = checkNotNull(speechPcm) { "録音はもう渡した" }.also { speechPcm = null }
+    }
+
+    internal class Capture {
+        val all = PcmChunks()
+        val speech = PcmChunks()
+
+        @Volatile
+        var active = true
+
+        fun drain(): DrainedBuffers? {
+            val allPcm = all.drain()
+            val speechPcm = speech.drain()
+            return if (allPcm.isEmpty()) null else DrainedBuffers(allPcm, speechPcm)
+        }
+
+        fun discard() {
+            all.discard()
+            speech.discard()
+        }
+    }
 
     @Synchronized
-    private fun finishAndDrain(drain: Boolean): DrainedBuffers? {
+    private fun finishCapture(drain: Boolean): Capture? {
         if (audioRecord == null) return null
         drainUntilMs =
             if (drain) {
@@ -221,7 +268,7 @@ class WavRecorder(
             } else {
                 0L
             }
-        recording = false
+        capture?.active = false
         readerThread?.join(DRAIN_TIMEOUT_MS + 1500L)
         readerThread = null
         audioRecord?.runCatching { stop() }
@@ -229,11 +276,7 @@ class WavRecorder(
         audioRecord = null
         agc?.runCatching { release() }
         agc = null
-        val allPcm = allPcm16kBuffer.toByteArray()
-        val speechPcm = speechPcm16kBuffer.toByteArray()
-        allPcm16kBuffer.reset()
-        speechPcm16kBuffer.reset()
-        return if (allPcm.isEmpty()) null else DrainedBuffers(allPcm, speechPcm)
+        return capture.also { capture = null }
     }
 
     @SuppressLint("MissingPermission")
@@ -337,27 +380,67 @@ class WavRecorder(
             }
             return samples
         }
+    }
+}
 
-        fun writeShort(
-            out: ByteArrayOutputStream,
-            value: Short,
-        ) {
-            val v = value.toInt()
-            out.write(v and 0xFF)
-            out.write((v shr 8) and 0xFF)
-        }
+internal class PcmChunks(
+    private val chunkBytes: Int = DEFAULT_CHUNK_BYTES,
+    private val allocate: (Int) -> ByteArray = ::ByteArray,
+) {
+    init {
 
-        fun writeFrame(
-            out: ByteArrayOutputStream,
-            frame: ShortArray,
-        ) {
-            val bytes = ByteArray(frame.size * BYTES_PER_SAMPLE)
-            for (i in frame.indices) {
-                val v = frame[i].toInt()
-                bytes[i * 2] = (v and 0xFF).toByte()
-                bytes[i * 2 + 1] = ((v shr 8) and 0xFF).toByte()
+        require(chunkBytes > 0 && chunkBytes % 2 == 0) { "chunkBytes must be a positive even number" }
+    }
+
+    private val chunks = ArrayList<ByteArray>()
+
+    private var used = 0
+    private var closed = false
+
+    val size: Long
+        @Synchronized get() = if (chunks.isEmpty()) 0L else (chunks.size - 1L) * chunkBytes + used
+
+    @Synchronized
+    fun append(samples: ShortArray) {
+        if (closed) return
+        for (s in samples) {
+            if (chunks.isEmpty() || used == chunkBytes) {
+                chunks.add(allocate(chunkBytes))
+                used = 0
             }
-            out.write(bytes)
+            val chunk = chunks[chunks.size - 1]
+            val v = s.toInt()
+            chunk[used] = (v and 0xFF).toByte()
+            chunk[used + 1] = ((v shr 8) and 0xFF).toByte()
+            used += 2
         }
+    }
+
+    @Synchronized
+    fun drain(): ByteArray {
+        closed = true
+        val out = ByteArray(Math.toIntExact(size))
+        var pos = 0
+        for (i in chunks.indices) {
+            val n = if (i == chunks.size - 1) used else chunkBytes
+            chunks[i].copyInto(out, destinationOffset = pos, startIndex = 0, endIndex = n)
+            pos += n
+            chunks[i] = EMPTY
+        }
+        chunks.clear()
+        used = 0
+        return out
+    }
+
+    @Synchronized
+    fun discard() {
+        closed = true
+        chunks.clear()
+        used = 0
+    }
+
+    companion object {
+        const val DEFAULT_CHUNK_BYTES = 64 * 1024
+        private val EMPTY = ByteArray(0)
     }
 }

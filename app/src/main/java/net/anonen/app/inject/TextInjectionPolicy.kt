@@ -1,5 +1,13 @@
 package net.anonen.app.inject
 
+internal enum class TargetMatch {
+    NO_RECORD,
+
+    SAME,
+
+    MOVED,
+}
+
 internal enum class InjectionPlan {
     INPUT_CONNECTION_COMMIT,
     STANDARD_SET_TEXT,
@@ -8,6 +16,17 @@ internal enum class InjectionPlan {
 }
 
 internal object TextInjectionPolicy {
+    fun targetMatch(
+        hadTargetAtStop: Boolean,
+        hasFocusNow: Boolean,
+        sameNode: Boolean,
+    ): TargetMatch =
+        when {
+            !hadTargetAtStop -> TargetMatch.NO_RECORD
+            hasFocusNow && sameNode -> TargetMatch.SAME
+            else -> TargetMatch.MOVED
+        }
+
     fun planFor(
         className: CharSequence?,
         packageName: CharSequence?,

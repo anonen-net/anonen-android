@@ -82,6 +82,11 @@ class AnonenCloudModels(
 
     fun isSelectionRetired(selectedModel: String): Boolean = isSelectionRetired(selectedModel, _models.value)
 
+    fun isLoadedButEmpty(): Boolean = _lastFetch.value == Fetch.LOADED && _models.value.isEmpty()
+
+    fun blocksStartForEmptyCatalog(selectedModel: String): Boolean =
+        selectedModel.startsWith(ModelIds.ANONEN_CLOUD_PREFIX) && isLoadedButEmpty()
+
     companion object {
         private const val CACHE_TTL_MS = 5 * 60 * 1000L
 

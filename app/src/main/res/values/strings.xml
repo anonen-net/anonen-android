@@ -1,6 +1,5 @@
 
 <resources xmlns:tools="http://schemas.android.com/tools" tools:ignore="MissingTranslation">
-    <string name="app_name">あのねん</string>
 
     <string name="accessibility_service_label">あのねん テキスト入力</string>
     <string name="accessibility_service_description">読み取るもの: 入力中の欄の文字と選択範囲、キーボードが出ているか。使い道: 入力中だけボタンを出し、話した文字を入れる。保存・送信: しません。</string>

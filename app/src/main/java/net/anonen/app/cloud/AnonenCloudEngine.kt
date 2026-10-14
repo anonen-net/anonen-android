@@ -24,6 +24,7 @@ class AnonenCloudEngine(
     private val opusEncode: ((ByteArray) -> ByteArray?)? = null,
     private val enclaveKeys: EnclaveKeys?,
     private val sealedRequired: Boolean,
+    private val removeFillers: Boolean,
 ) : TranscriptionEngine {
     override fun transcribe(request: TranscriptionRequest): TranscriptionResult {
         if (!isOnline()) {
@@ -128,7 +129,7 @@ class AnonenCloudEngine(
 
             try {
                 val response =
-                    gatewayClient.transcribe(token, audio, model, language, timeoutSecs, cancel, enclave)
+                    gatewayClient.transcribe(token, audio, model, language, timeoutSecs, cancel, enclave, removeFillers)
 
                 notifyQuietly("usage") { response.usage?.let { onUsageUpdate?.invoke(it) } }
                 notifyQuietly("models_version") {
@@ -233,7 +234,7 @@ class AnonenCloudEngine(
                     }
                 }
 
-                e.isAudioTooLong -> "1 回の録音が長すぎました（スマホの中のモデルなら使えます）"
+                e.isAudioTooLong -> AUDIO_TOO_LONG_MESSAGE
                 e.isUnauthorized -> "ログインが切れました"
 
                 e.isSealUnavailable -> "安全に送れる状態を確認できませんでした（音声は送っていません）"
@@ -260,7 +261,8 @@ class AnonenCloudEngine(
                 e.isModelInvalid -> "このモデルはもう使えません"
 
                 e.code == "bad_response" -> "あのねんの返事を読めませんでした"
-                e.httpStatus == 502 -> "あのねんが一時的に使えません"
+
+                e.httpStatus == 502 || e.isUsageSuspended || e.isServicePaused -> "あのねんが一時的に使えません"
                 e.httpStatus == 503 -> "あのねんが混み合っています"
                 else -> "文字起こしできませんでした"
             }
@@ -277,6 +279,8 @@ class AnonenCloudEngine(
     companion object {
         private const val MAX_ATTEMPTS = 3
         private val BACKOFF_MS = longArrayOf(0, 1000, 2000)
+
+        const val AUDIO_TOO_LONG_MESSAGE = "1 回の録音が長すぎました（スマホの中のモデルなら使えます）"
 
         private const val WAV_BYTES_PER_SEC = 32_000L
 

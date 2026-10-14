@@ -33,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.LineBreak
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import net.anonen.app.AnonenApp
 import net.anonen.app.asr.ModelState
@@ -58,7 +59,14 @@ internal fun ModelSelectionSection(
     val cloudFetch by app.cloudModels.lastFetch.collectAsState()
     val stats by app.modelStats.stats.collectAsState(initial = emptyMap())
 
-    val relativeSpeed = remember(stats) { ModelStatsStore.relativeSpeedScores(stats) }
+    val perSecond = remember(stats) { stats.mapValues { (_, samples) -> ModelStatsStore.perAudioSecond(samples) } }
+    val blendedSpeed =
+        remember(perSecond, cloudModels) {
+            ModelStatsStore.blendedSpeedScores(
+                perSecond,
+                cloudModels.associate { "${ModelIds.ANONEN_CLOUD_PREFIX}${it.id}" to it.speedScore },
+            )
+        }
 
     LaunchedEffect(Unit) {
         if (isSignedIn.value) app.cloudModels.refresh()
@@ -164,10 +172,12 @@ internal fun ModelSelectionSection(
                                 }
                             },
                             accuracy = model.accuracyScore,
-                            speed = relativeSpeed[fullId] ?: model.speedScore,
-                            speedIsMeasured = relativeSpeed.containsKey(fullId),
-                            samples = stats[fullId].orEmpty(),
+                            speed = blendedSpeed[fullId] ?: model.speedScore,
+                            speedIsMeasured = blendedSpeed.containsKey(fullId) && !perSecond[fullId].isNullOrEmpty(),
+                            samples = stats[fullId].orEmpty().map { it.ms },
                             onDetails = { viewingPolicyId = model.id },
+                            preview = model.isPreview,
+                            fillerReduction = model.supportsFillerRemoval,
                         )
                     }
                 }
@@ -185,19 +195,18 @@ internal fun ModelSelectionSection(
                     enabled = modelState is ModelState.Ready,
                     onClick = { update { it.copy(selectedModel = info.id) } },
                     accuracy = info.accuracyScore,
-                    speed = relativeSpeed[info.id] ?: info.speedScore,
-                    speedIsMeasured = relativeSpeed.containsKey(info.id),
-                    samples = stats[info.id].orEmpty(),
+                    speed = info.speedScore,
+                    samples = stats[info.id].orEmpty().map { it.ms },
                 )
                 LocalModelDownloadRow(
                     info = info,
                     state = modelState,
                     onDownload = { scope.launch { app.localModelManager.download(info) } },
                     onDelete = {
-                        app.localModelManager.delete(info)
                         if (settings.selectedModel == info.id) {
                             update { it.withNoModelSelected() }
                         }
+                        scope.launch(Dispatchers.IO) { app.localModelManager.delete(info) }
                     },
                 )
             }
@@ -247,6 +256,14 @@ internal fun LocalModelDownloadRow(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+
+            is ModelState.Deleting -> {
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth().height(8.dp),
+                    color = MaterialTheme.colorScheme.error,
+                    trackColor = MaterialTheme.colorScheme.outlineVariant,
                 )
             }
             is ModelState.Ready -> {
@@ -314,6 +331,8 @@ internal fun ModelScoreRow(
     showSpeed: Boolean = true,
     samples: List<Long> = emptyList(),
     onDetails: (() -> Unit)? = null,
+    preview: Boolean = false,
+    fillerReduction: Boolean = false,
 ) {
     Row(
         verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
@@ -356,6 +375,12 @@ internal fun ModelScoreRow(
                     )
                 }
             }
+
+            ModelChipsRow(
+                preview = preview,
+                fillerReduction = fillerReduction,
+                modifier = Modifier.padding(top = 2.dp, bottom = 4.dp),
+            )
 
             if (detail != null || quotaNote != null) {
                 Row(

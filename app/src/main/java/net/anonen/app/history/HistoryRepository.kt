@@ -3,6 +3,7 @@ package net.anonen.app.history
 import kotlinx.coroutines.flow.Flow
 import net.anonen.app.pipeline.TranscriptionPipeline
 import java.io.File
+import java.io.IOException
 
 class HistoryRepository(
     private val dao: HistoryDao,
@@ -21,6 +22,10 @@ class HistoryRepository(
         audioLimit: Int = 0,
     ) {
         val audioFileName = saveAudio(wavBytes)
+        val audioLost = audioFileName == null && audioDir != null && wavBytes != null && wavBytes.isNotEmpty()
+        if (audioLost && TranscriptionPipeline.isUntranscribedHistoryText(text)) {
+            throw IOException("録音を記録に書けなかった（未転写の行なので入れない）")
+        }
         try {
             dao.insert(
                 HistoryEntry(

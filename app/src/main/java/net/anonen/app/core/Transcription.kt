@@ -19,6 +19,7 @@ data class AsrError(
     val httpStatus: Int? = null,
     val fallbackHint: String? = null,
     val capResetAt: String? = null,
+    val partialText: String? = null,
 ) {
     enum class Kind { CONFIG, NETWORK, HTTP, PARSE, CANCELLED }
 

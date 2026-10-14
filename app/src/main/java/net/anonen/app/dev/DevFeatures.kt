@@ -27,6 +27,13 @@ interface DevFeatures {
 
     fun plainUpload(): PlainUpload? = null
 
+    fun sendsWavToCloud(context: Context): Boolean = false
+
+    fun onOpusEncoded(
+        context: Context,
+        ogg: ByteArray,
+    ) {}
+
     fun modelDisplayName(selectedModel: String): String? = null
 
     fun fallbackModelId(selectedModel: String): String? = null

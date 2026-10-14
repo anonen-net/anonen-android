@@ -10,6 +10,7 @@ data class AnonenSettings(
     val previouslySelectedCloudModels: List<String> = emptyList(),
     val acknowledgedCloudPolicies: List<String> = emptyList(),
     val languageHint: String = "ja",
+    val removeFillers: Boolean = false,
     val customWords: List<String> = emptyList(),
     val wordCorrectionThreshold: Double = 0.18,
     val customFillerWords: List<String>? = null,
@@ -33,6 +34,7 @@ data class AnonenSettings(
     val buttonAlpha: Float = DEFAULT_BUTTON_ALPHA,
     val buttonLookVersion: Int = BUTTON_LOOK_VERSION,
     val hapticFeedback: Boolean = true,
+    val insertIntoPasswordFields: Boolean = false,
     val buttonPosX: Int = -1,
     val buttonPosY: Int = -1,
 ) {

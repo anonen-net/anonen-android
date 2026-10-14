@@ -77,13 +77,6 @@ class AnonenAccessibilityService : AccessibilityService() {
             false
         }
 
-    fun currentInputPackageName(): String? =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            currentInputPackageNameApi33()
-        } else {
-            null
-        }
-
     fun isCurrentInputPassword(): Boolean =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             isCurrentInputPasswordApi33()
@@ -101,10 +94,6 @@ class AnonenAccessibilityService : AccessibilityService() {
             true
         }.getOrDefault(false)
     }
-
-    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
-    private fun currentInputPackageNameApi33(): String? =
-        runCatching { inputMethod?.currentInputEditorInfo?.packageName }.getOrNull()
 
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private fun isCurrentInputPasswordApi33(): Boolean =

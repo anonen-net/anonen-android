@@ -6,15 +6,17 @@ on:
       - "v*"
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 jobs:
-  android:
+  build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
 
       - uses: gradle/actions/wrapper-validation@48b5f213c81028ace310571dc5ec0fbbca0b2947
 
@@ -53,25 +55,12 @@ jobs:
           ANONEN_CLOUD_URL: ${{ vars.ANONEN_CLOUD_URL || 'https://api.anonen.net' }}
           ANONEN_SUPABASE_URL: ${{ vars.ANONEN_SUPABASE_URL }}
           ANONEN_SUPABASE_ANON_KEY: ${{ vars.ANONEN_SUPABASE_ANON_KEY }}
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           test -n "$ANONEN_SUPABASE_URL"
           test -n "$ANONEN_SUPABASE_ANON_KEY"
           case "$ANONEN_CLOUD_URL" in https://*) ;; *) echo "ANONEN_CLOUD_URL must be https"; exit 1;; esac
           case "$ANONEN_SUPABASE_URL" in https://*) ;; *) echo "ANONEN_SUPABASE_URL must be https"; exit 1;; esac
-          test -n "$ANDROID_KEYSTORE_BASE64"
-          test -n "$ANDROID_KEYSTORE_PASSWORD"
-          test -n "$ANDROID_KEY_ALIAS"
-          test -n "$ANDROID_KEY_PASSWORD"
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > release.keystore
-          printf '%s\n' \
-            "storeFile=release.keystore" \
-            "storePassword=$ANDROID_KEYSTORE_PASSWORD" \
-            "keyAlias=$ANDROID_KEY_ALIAS" \
-            "keyPassword=$ANDROID_KEY_PASSWORD" > keystore.properties
+          test ! -e keystore.properties
           printf '%s\n' \
             "ANONEN_EDITION=product" \
             "ANONEN_CLOUD_URL=$ANONEN_CLOUD_URL" \
@@ -117,11 +106,86 @@ jobs:
           unzip -l "$apk" | grep -q ' assets/NOTICE.md$'
           unzip -l "$apk" | grep -q ' assets/THIRD-PARTY-NOTICES.md$'
 
-      - name: Collect release files
+      - name: Collect unsigned packages
         run: |
-          mkdir release
-          find app/build/outputs -type f \( -name '*.aab' -o -name '*.apk' \) -exec cp '{}' release/ \;
-          test -n "$(find release -type f -print -quit)"
+          bt="$ANDROID_HOME/build-tools/35.0.0"
+          test -x "$bt/zipalign" || "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "build-tools;35.0.0"
+          mkdir unsigned
+          "$bt/zipalign" -P 16 -f 4 app/build/outputs/apk/release/app-release-unsigned.apk unsigned/app-release.apk
+          "$bt/zipalign" -c -P 16 4 unsigned/app-release.apk
+          cp app/build/outputs/bundle/release/app-release.aab unsigned/app-release.aab
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: unsigned
+          path: unsigned/
+          if-no-files-found: error
+
+  sign:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: unsigned
+          path: unsigned/
+
+      - name: Sign the packages
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$ANDROID_KEYSTORE_BASE64"
+          test -n "$ANDROID_KEYSTORE_PASSWORD"
+          test -n "$ANDROID_KEY_ALIAS"
+          test -n "$ANDROID_KEY_PASSWORD"
+          bt="$ANDROID_HOME/build-tools/35.0.0"
+          test -x "$bt/apksigner" || "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "build-tools;35.0.0"
+          ks="$RUNNER_TEMP/release.keystore"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ks"
+          mkdir signed
+          "$bt/apksigner" sign --ks "$ks" --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --ks-pass env:ANDROID_KEYSTORE_PASSWORD --key-pass env:ANDROID_KEY_PASSWORD \
+            --alignment-preserved --v1-signing-enabled false --v4-signing-enabled false \
+            --out signed/app-release.apk unsigned/app-release.apk
+          "$bt/apksigner" verify --print-certs signed/app-release.apk
+          cp unsigned/app-release.aab signed/app-release.aab
+          jarsigner="${JAVA_HOME:?}/bin/jarsigner"
+          "$jarsigner" -keystore "$ks" -storepass:env ANDROID_KEYSTORE_PASSWORD -keypass:env ANDROID_KEY_PASSWORD \
+            signed/app-release.aab "$ANDROID_KEY_ALIAS"
+          "$jarsigner" -verify signed/app-release.aab > "$RUNNER_TEMP/verify.txt"
+          grep -q 'jar verified' "$RUNNER_TEMP/verify.txt"
+
+      - name: Remove the key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.keystore"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: signed
+          path: signed/
+          if-no-files-found: error
+
+  publish:
+    needs: sign
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: signed
+          path: release/
+
+      - name: Checksums
+        run: |
           cd release
           sha256sum ./*.aab ./*.apk > SHA256SUMS.txt
 
@@ -135,4 +199,6 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" release/* --title "Release $GITHUB_REF_NAME" --notes "Verified release build."
+        run: >-
+          gh release create "$GITHUB_REF_NAME" release/* --repo "$GITHUB_REPOSITORY"
+          --title "Release $GITHUB_REF_NAME" --notes "Verified release build."

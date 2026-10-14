@@ -18,6 +18,8 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.ResponseBody
+import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
@@ -35,6 +37,7 @@ fun interface PlainUpload {
         timeoutSecs: Long?,
         cancel: TranscribeCancelController?,
         requestId: String,
+        removeFillers: Boolean,
     ): TranscribeResponse
 }
 
@@ -75,15 +78,36 @@ class AnonenCloudClient(
         timeoutSecs: Long? = null,
         cancel: TranscribeCancelController? = null,
         enclave: VerifiedEnclave?,
+        removeFillers: Boolean = false,
     ): TranscribeResponse {
         val modelId = requireCatalogModelId(model)
         val requestId = UUID.randomUUID().toString()
         if (enclave != null) {
-            return transcribeSealed(accessToken, audio, modelId, language, timeoutSecs, cancel, enclave, requestId)
+            return transcribeSealed(
+                accessToken,
+                audio,
+                modelId,
+                language,
+                timeoutSecs,
+                cancel,
+                enclave,
+                requestId,
+                removeFillers,
+            )
         }
 
         val plain = plainUpload ?: throw GatewayError(0, "seal_unavailable", body = "")
-        return plain.transcribe(this, accessToken, audio, modelId, language, timeoutSecs, cancel, requestId)
+        return plain.transcribe(
+            this,
+            accessToken,
+            audio,
+            modelId,
+            language,
+            timeoutSecs,
+            cancel,
+            requestId,
+            removeFillers,
+        )
     }
 
     private fun transcribeSealed(
@@ -95,10 +119,11 @@ class AnonenCloudClient(
         cancel: TranscribeCancelController?,
         enclave: VerifiedEnclave,
         requestId: String,
+        removeFillers: Boolean,
     ): TranscribeResponse {
         val envelope =
             try {
-                SealedWire.seal(enclave.publicKey, requestId, model, language, audio.bytes)
+                SealedWire.seal(enclave.publicKey, requestId, model, language, audio.bytes, removeFillers)
             } catch (e: Exception) {
                 throw GatewayError(0, "seal_failed", body = "")
             }
@@ -114,7 +139,7 @@ class AnonenCloudClient(
         val outcome = execute(request, timeoutSecs, cancel)
         if (outcome.contentType() != SealedWire.CONTENT_TYPE) {
             val body = outcome.body.decodeToString()
-            if (!outcome.successful) throw parseGatewayError(outcome.code, body)
+            if (!outcome.successful) throw unsealedError(outcome.code, body)
             throw GatewayError(outcome.code, "sealed_response_missing", body = "")
         }
 
@@ -189,7 +214,7 @@ class AnonenCloudClient(
                 code = response.code,
                 successful = response.isSuccessful,
                 contentTypeHeader = response.header("Content-Type"),
-                body = response.body?.bytes() ?: ByteArray(0),
+                body = response.body.bytesAtMost(MAX_TRANSCRIBE_RESPONSE_BYTES),
             )
         } finally {
             cancel?.unregister(call)
@@ -240,7 +265,7 @@ class AnonenCloudClient(
                 .get()
                 .build()
         val response = client.newCall(request).execute()
-        val body = response.body?.string().orEmpty()
+        val body = response.body.stringAtMost(MAX_SMALL_RESPONSE_BYTES)
 
         if (!response.isSuccessful) throw java.io.IOException("GET /v1/models returned ${response.code}")
 
@@ -269,6 +294,8 @@ class AnonenCloudClient(
                 trainingUse = obj.stringOrNull("training_use") ?: "unknown",
                 retentionKind = obj.stringOrNull("retention_kind") ?: "unknown",
                 retentionDays = obj.wholeCountOrNull("retention_days"),
+                releaseStage = obj.stringOrNull("release_stage")?.takeIf { it.isNotBlank() } ?: RELEASE_STAGE_GA,
+                supportsFillerRemoval = obj.booleanOrNull("supports_filler_removal") ?: false,
             )
         }
     }
@@ -282,7 +309,7 @@ class AnonenCloudClient(
                 .get()
                 .build()
         val response = client.newCall(request).execute()
-        val body = response.body?.string().orEmpty()
+        val body = response.body.stringAtMost(MAX_SMALL_RESPONSE_BYTES)
         if (!response.isSuccessful) {
             throw parseGatewayError(response.code, body)
         }
@@ -327,6 +354,15 @@ class AnonenCloudClient(
         private val SEALED_MEDIA_TYPE = SealedWire.CONTENT_TYPE.toMediaType()
     }
 
+    internal fun unsealedError(
+        httpStatus: Int,
+        body: String,
+    ): GatewayError {
+        val err = parseGatewayError(httpStatus, body)
+        if (!err.isCapExceeded && !err.isUsageSuspended) return err
+        return GatewayError(httpStatus, "unknown", body = body)
+    }
+
     internal fun parseGatewayError(
         httpStatus: Int,
         body: String,
@@ -347,6 +383,28 @@ class AnonenCloudClient(
         }
     }
 }
+
+internal const val MAX_TRANSCRIBE_RESPONSE_BYTES = 8L * 1024 * 1024
+
+internal const val MAX_SMALL_RESPONSE_BYTES = 256L * 1024
+
+internal fun ResponseBody?.bytesAtMost(limit: Long): ByteArray {
+    if (this == null) return ByteArray(0)
+    return use { body ->
+        val declared = body.contentLength()
+        if (declared > limit) throw IOException("response too large: $declared bytes")
+        val source = body.source()
+        val out = okio.Buffer()
+        while (source.read(out, READ_STEP_BYTES) != -1L) {
+            if (out.size > limit) throw IOException("response too large: over $limit bytes")
+        }
+        out.readByteArray()
+    }
+}
+
+internal fun ResponseBody?.stringAtMost(limit: Long): String = bytesAtMost(limit).decodeToString()
+
+private const val READ_STEP_BYTES = 8192L
 
 class AudioUpload private constructor(
     val bytes: ByteArray,
@@ -408,12 +466,20 @@ data class CloudModelInfo(
     val trainingUse: String = "unknown",
     val retentionKind: String = "unknown",
     val retentionDays: Int? = null,
-)
+    val releaseStage: String = RELEASE_STAGE_GA,
+    val supportsFillerRemoval: Boolean = false,
+) {
+    val isPreview: Boolean get() = releaseStage == RELEASE_STAGE_PREVIEW
+}
+
+const val RELEASE_STAGE_GA = "ga"
+const val RELEASE_STAGE_PREVIEW = "preview"
 
 internal fun requireCatalogModelId(model: String?): String {
     val id = model?.trim().orEmpty()
-    val parts = id.split("/")
-    if (parts.size != 2 || parts[0].isEmpty() || parts[1].isEmpty()) {
+
+    val slash = id.indexOf('/')
+    if (slash <= 0 || slash == id.length - 1) {
         throw GatewayError(
             httpStatus = 0,
             code = "client_misconfigured",
@@ -433,10 +499,15 @@ class GatewayError(
 ) : Exception("Gateway error $httpStatus/$code") {
     val isRetryable: Boolean
         get() =
-            httpStatus in listOf(408, 409, 500, 502, 503) ||
+            httpStatus in listOf(408, 409, 500, 502) ||
+                (httpStatus == 503 && !isServicePaused) ||
                 (httpStatus == 429 && code == "rate_limited")
 
     val isCapExceeded: Boolean get() = httpStatus == 429 && code == "cap_exceeded"
+
+    val isUsageSuspended: Boolean get() = httpStatus == 429 && code == "usage_suspended"
+
+    val isServicePaused: Boolean get() = httpStatus == 503 && code == "service_paused"
 
     companion object {
         val LOCAL_ONLY_CODES: Set<String> =

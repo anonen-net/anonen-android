@@ -124,6 +124,16 @@ fun usageToneColor(positive: Boolean): Color {
 }
 
 @Composable
+fun previewToneColor(): Color =
+    if (MaterialTheme.colorScheme.background.luminance() < 0.5f) {
+        Color(0xFFC4B5FD)
+    } else {
+        Color(0xFF6D28D9)
+    }
+
+val PREVIEW_CHIP_FILL = Color(0x268B5CF6)
+
+@Composable
 fun AnonenTheme(
     themeMode: ThemeMode = ThemeMode.SYSTEM,
     content: @Composable () -> Unit,

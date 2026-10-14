@@ -22,6 +22,7 @@ import java.io.IOException
 import java.io.InterruptedIOException
 import java.util.Base64
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 class AnonenCloudAuth(
     private val supabaseUrl: String,
@@ -46,6 +47,10 @@ class AnonenCloudAuth(
     private var accessToken: AccessToken? = null
 
     private val refreshLock = Any()
+
+    private val stateLock = Any()
+
+    private val sessionGeneration = AtomicLong(0)
 
     data class AuthStatus(
         val signedIn: Boolean,
@@ -93,7 +98,7 @@ class AnonenCloudAuth(
     }
 
     private fun otpSendErrorMessage(code: Int): String {
-        DiagnosticsLog.log("ログインの数字を送れない http=$code")
+        DiagnosticsLog.log("確認コードを送れない http=$code")
         return when (code) {
             429 -> "何回も送ったので、少し待ってください"
             in 500..599 -> "メールを送れません。少し待ってください"
@@ -135,14 +140,14 @@ class AnonenCloudAuth(
             } catch (e: IOException) {
                 throw AnonenCloudAuthException(networkErrorMessage(e))
             }
-        val responseBody = response.body?.string().orEmpty()
+        val responseBody = response.body.stringAtMost(MAX_SMALL_RESPONSE_BYTES)
         if (!response.isSuccessful) {
-            DiagnosticsLog.log("ログインの数字を確かめられない http=${response.code}")
+            DiagnosticsLog.log("確認コードを確かめられない http=${response.code}")
             throw AnonenCloudAuthException(
                 when (response.code) {
                     429 -> TOO_MANY_TRIES
 
-                    400, 401, 403 -> "数字が違うか、古くなっています。一番新しいメールの数字を入れてください"
+                    400, 401, 403 -> "確認コードが違うか、古くなっています。一番新しいメールのコードを入れてください"
                     else -> "うまく確かめられませんでした"
                 },
             )
@@ -176,7 +181,7 @@ class AnonenCloudAuth(
             } catch (e: IOException) {
                 throw AnonenCloudAuthException(networkErrorMessage(e))
             }
-        val responseBody = response.body?.string().orEmpty()
+        val responseBody = response.body.stringAtMost(MAX_SMALL_RESPONSE_BYTES)
         if (!response.isSuccessful) {
             DiagnosticsLog.log("パスワードでログインできない http=${response.code}")
             throw AnonenCloudAuthException(
@@ -196,12 +201,36 @@ class AnonenCloudAuth(
         synchronized(refreshLock) {
             accessToken?.let { if (it.isFresh()) return it.token }
 
-            val refresh =
-                loadRefreshToken()
-                    ?: throw AnonenCloudAuthException("あのねんにログインしてください")
-            val newToken = refreshAccessToken(refresh)
-            accessToken = newToken
-            return newToken.token
+            val (generation, stored) = synchronized(stateLock) { sessionGeneration.get() to loadRefreshToken() }
+            val refresh = stored ?: throw AnonenCloudAuthException(SIGN_IN_REQUIRED)
+            val renewed =
+                try {
+                    refreshAccessToken(refresh)
+                } catch (e: RefreshRejected) {
+                    val stillSame =
+                        synchronized(stateLock) {
+                            (sessionGeneration.get() == generation).also { if (it) clearRefreshToken() }
+                        }
+
+                    if (stillSame) onSessionInvalidated()
+                    throw AnonenCloudAuthException("ログインが切れました")
+                }
+            val kept =
+                synchronized(stateLock) {
+                    if (sessionGeneration.get() != generation) {
+                        false
+                    } else {
+                        storeRefreshToken(renewed.refresh)
+                        accessToken = renewed.access
+                        true
+                    }
+                }
+            if (!kept) {
+                DiagnosticsLog.log("更新の間にサインアウトされた → 新しい token は保存せず失効させる")
+                revokeSessionAsync(renewed.access.token, null)
+                throw AnonenCloudAuthException(SIGN_IN_REQUIRED)
+            }
+            return renewed.access.token
         }
     }
 
@@ -212,7 +241,9 @@ class AnonenCloudAuth(
     fun logout() {
         val fresh = accessToken?.takeIf { it.isFresh() }?.token
         val refresh = if (fresh == null) loadRefreshToken() else null
-        synchronized(refreshLock) {
+
+        synchronized(stateLock) {
+            sessionGeneration.incrementAndGet()
             clearRefreshToken()
             clearEmail()
             accessToken = null
@@ -245,7 +276,7 @@ class AnonenCloudAuth(
                         response.use { r ->
                             if (!r.isSuccessful) return
                             runCatching {
-                                Json.parseToJsonElement(r.body?.string().orEmpty())
+                                Json.parseToJsonElement(r.body.stringAtMost(MAX_SMALL_RESPONSE_BYTES))
                                     .jsonObject["access_token"]?.jsonPrimitive?.contentOrNull
                             }.getOrNull()
                         }
@@ -291,7 +322,14 @@ class AnonenCloudAuth(
             .build()
     }
 
-    private fun refreshAccessToken(refreshToken: String): AccessToken {
+    private class RefreshRejected : Exception()
+
+    private class Renewed(
+        val access: AccessToken,
+        val refresh: String,
+    )
+
+    private fun refreshAccessToken(refreshToken: String): Renewed {
         if (!isOnline()) throw AnonenCloudAuthException(OFFLINE_MESSAGE)
         val request = refreshRequest(refreshToken)
 
@@ -302,14 +340,9 @@ class AnonenCloudAuth(
             throw AnonenCloudAuthException(networkErrorMessage(e))
         }
 
-        val responseBody = response.body?.string().orEmpty()
+        val responseBody = response.body.stringAtMost(MAX_SMALL_RESPONSE_BYTES)
         if (!response.isSuccessful) {
-            if (response.code == 400 || response.code == 401) {
-                clearRefreshToken()
-
-                onSessionInvalidated()
-                throw AnonenCloudAuthException("ログインが切れました")
-            }
+            if (response.code == 400 || response.code == 401) throw RefreshRejected()
             DiagnosticsLog.log("ログインを続けられない http=${response.code}")
             throw AnonenCloudAuthException("ログインできませんでした。少し待ってください")
         }
@@ -332,8 +365,7 @@ class AnonenCloudAuth(
             throw AnonenCloudAuthException(LOGIN_FAILED)
         }
 
-        storeRefreshToken(newRefresh)
-        return AccessToken(access, System.currentTimeMillis() + expiresIn * 1000)
+        return Renewed(AccessToken(access, System.currentTimeMillis() + expiresIn * 1000), newRefresh)
     }
 
     private fun consumeSessionResponse(body: String) {
@@ -359,7 +391,8 @@ class AnonenCloudAuth(
             throw AnonenCloudAuthException(LOGIN_FAILED)
         }
 
-        synchronized(refreshLock) {
+        synchronized(stateLock) {
+            sessionGeneration.incrementAndGet()
             storeRefreshToken(refresh)
 
             if (email != null) storeEmail(email) else clearEmail()
@@ -397,6 +430,9 @@ class AnonenCloudAuth(
         private val JSON_MEDIA_TYPE = "application/json".toMediaType()
         private const val REFRESH_SKEW_MS = 60_000L
         private const val OFFLINE_MESSAGE = "ネットにつながっていません"
+
+        private const val SIGN_IN_REQUIRED = "あのねんにログインしてください"
+
         private const val TOO_MANY_TRIES = "何回も入れたので、少し待ってください"
         internal const val LOGIN_FAILED = "ログインできませんでした"
 

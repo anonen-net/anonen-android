@@ -32,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.anonen.app.AnonenApp
@@ -197,8 +198,10 @@ internal fun SubscriptionRequiredScreen(
                 onClick = {
                     rechecking = true
                     scope.launch {
+                        val minSpin = launch { delay(MIN_RECHECK_SPIN_MS) }
                         withContext(Dispatchers.IO) { runCatching { app.cloudUsage.fetch() } }
                         app.entitlement.refresh()
+                        minSpin.join()
                         rechecking = false
                     }
                 },
@@ -275,3 +278,5 @@ internal fun HistoryWallScreen(onBack: () -> Unit) {
         }
     }
 }
+
+private const val MIN_RECHECK_SPIN_MS = 1_000L

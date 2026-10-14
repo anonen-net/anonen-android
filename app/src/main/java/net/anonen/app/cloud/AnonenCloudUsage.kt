@@ -32,8 +32,15 @@ class AnonenCloudUsage(
         withContext(Dispatchers.IO) {
             try {
                 val user = auth.status().email
-                val token = auth.getAccessToken()
-                val account = client.fetchUsage(token)
+                val account =
+                    try {
+                        client.fetchUsage(auth.getAccessToken())
+                    } catch (e: GatewayError) {
+                        if (!e.isUnauthorized) throw e
+                        DiagnosticsLog.log("Usage 取得: 401 → token を取り直して 1 回だけやり直す")
+                        auth.invalidateAccessToken()
+                        client.fetchUsage(auth.getAccessToken())
+                    }
                 if (auth.status().email != user) {
                     DiagnosticsLog.log("Usage 破棄: fetch 中にアカウントが変わった")
                     return@withContext null

@@ -2,20 +2,24 @@ package net.anonen.app.record
 
 import android.media.MediaCodec
 import android.media.MediaFormat
-import android.media.MediaMuxer
 import android.os.Build
 import net.anonen.app.core.DiagnosticsLog
 import java.io.File
 
 object OpusOggEncoder {
-    fun encode(
-        wavBytes: ByteArray,
-        tempDir: File,
-    ): ByteArray? {
+    fun sweepLeftovers(cacheDir: File): Int {
+        val leftovers =
+            runCatching {
+                cacheDir.listFiles { f -> f.isFile && f.name.startsWith("opus-encoder") && f.name.endsWith(".ogg") }
+            }.getOrNull() ?: return 0
+        return leftovers.count { runCatching { it.delete() }.getOrDefault(false) }
+    }
+
+    fun encode(wavBytes: ByteArray): ByteArray? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
         val pcm = extractPcm16(wavBytes) ?: return null
         return try {
-            encodePcm(pcm, tempDir)
+            encodePcm(pcm)
         } catch (e: Exception) {
             DiagnosticsLog.log("Opus エンコード失敗 → WAV 送信: ${e.javaClass.simpleName}")
             null
@@ -56,14 +60,8 @@ object OpusOggEncoder {
         return null
     }
 
-    private fun encodePcm(
-        pcm: ByteArray,
-        tempDir: File,
-    ): ByteArray {
-        val tmp = File.createTempFile("opus-encoder", ".ogg", tempDir)
+    private fun encodePcm(pcm: ByteArray): ByteArray {
         var codec: MediaCodec? = null
-        var muxer: MediaMuxer? = null
-        var muxerStarted = false
         try {
             val format =
                 MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_OPUS, SAMPLE_RATE, 1)
@@ -71,9 +69,9 @@ object OpusOggEncoder {
             codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_OPUS)
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             codec.start()
-            muxer = MediaMuxer(tmp.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_OGG)
 
-            var trackIndex = -1
+            val packets = mutableListOf<ByteArray>()
+            var preSkip = OggOpusWriter.DEFAULT_PRE_SKIP
             var inOffset = 0
             var inputDone = false
             var sawEos = false
@@ -114,16 +112,16 @@ object OpusOggEncoder {
                 while (!sawEos) {
                     when {
                         outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                            trackIndex = muxer.addTrack(codec.outputFormat)
-                            muxer.start()
-                            muxerStarted = true
+                            preSkip = OggOpusWriter.preSkipFromOpusHead(codec.outputFormat.csd0()) ?: preSkip
                         }
                         outIndex >= 0 -> {
                             val isConfig =
                                 (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
-                            if (info.size > 0 && !isConfig && muxerStarted) {
+                            if (info.size > 0 && !isConfig) {
                                 val outBuf = checkNotNull(codec.getOutputBuffer(outIndex))
-                                muxer.writeSampleData(trackIndex, outBuf, info)
+                                outBuf.position(info.offset)
+                                outBuf.limit(info.offset + info.size)
+                                packets += ByteArray(info.size).also { outBuf.get(it) }
                             }
                             codec.releaseOutputBuffer(outIndex, false)
                             if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
@@ -136,14 +134,15 @@ object OpusOggEncoder {
                 }
             }
             codec.stop()
-            if (muxerStarted) muxer.stop()
-            return tmp.readBytes()
+
+            return OggOpusWriter.write(packets, preSkip, SAMPLE_RATE, inputSamples = pcm.size / 2L)
         } finally {
             runCatching { codec?.release() }
-            runCatching { muxer?.release() }
-            tmp.delete()
         }
     }
+
+    private fun MediaFormat.csd0(): ByteArray? =
+        getByteBuffer("csd-0")?.let { b -> ByteArray(b.remaining()).also { b.duplicate().get(it) } }
 
     private fun ByteArray.hasAscii(
         offset: Int,
@@ -163,7 +162,9 @@ object OpusOggEncoder {
         (this[offset].toInt() and 0xFF) or ((this[offset + 1].toInt() and 0xFF) shl 8)
 
     private const val SAMPLE_RATE = 16000
-    private const val BIT_RATE = 32_000
+
+    internal const val BIT_RATE = 48_000
+
     private const val TIMEOUT_US = 10_000L
     private const val ENCODE_DEADLINE_MS = 30_000L
 }

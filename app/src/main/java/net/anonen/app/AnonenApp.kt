@@ -31,6 +31,7 @@ import net.anonen.app.history.AnonenDatabase
 import net.anonen.app.history.HistoryRepository
 import net.anonen.app.history.HistoryTrash
 import net.anonen.app.history.Retranscriber
+import net.anonen.app.record.OpusOggEncoder
 import net.anonen.app.settings.SecureStore
 import net.anonen.app.settings.SettingsRepository
 import okhttp3.OkHttpClient
@@ -138,6 +139,12 @@ class AnonenApp : Application() {
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    fun runDetached(block: suspend () -> Unit) {
+        appScope.launch {
+            runCatching { block() }.onFailure { logThrowable("detached", it) }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         installCrashLogger()
@@ -146,6 +153,9 @@ class AnonenApp : Application() {
         appScope.launch {
             val removed = runCatching { historyRepository.sweepOrphanAudio() }.getOrDefault(0)
             if (removed > 0) DiagnosticsLog.log("履歴: 参照の無い録音を $removed 件片づけた")
+
+            val leftovers = OpusOggEncoder.sweepLeftovers(cacheDir)
+            if (leftovers > 0) DiagnosticsLog.log("古い版の一時ファイル（録音）を $leftovers 件消した")
         }
     }
 

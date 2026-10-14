@@ -13,13 +13,11 @@ class SpectralMatchEq(
 
     fun process(samples: ShortArray): ShortArray {
         if (samples.size < N) return samples
-        val x = DoubleArray(samples.size) { samples[it].toDouble() }
-        val gain = computeGain(x)
-        val y = wolaFilter(x, gain)
-        return ShortArray(samples.size) { y[it].roundToShortValue() }
+        val gain = computeGain(samples)
+        return wolaFilter(samples, gain)
     }
 
-    private fun computeGain(x: DoubleArray): DoubleArray {
+    private fun computeGain(x: ShortArray): DoubleArray {
         val own = smoothLog(ltas(x))
         var maxV = 0.0
         for (v in own) if (v > maxV) maxV = v
@@ -31,7 +29,7 @@ class SpectralMatchEq(
         }
     }
 
-    private fun ltas(x: DoubleArray): DoubleArray {
+    private fun ltas(x: ShortArray): DoubleArray {
         val voiced = voicedConcat(x)
         val psd = DoubleArray(BINS)
         val re = DoubleArray(N)
@@ -52,7 +50,7 @@ class SpectralMatchEq(
         return DoubleArray(BINS) { sqrt(psd[it]) }
     }
 
-    private fun voicedConcat(x: DoubleArray): DoubleArray {
+    private fun voicedConcat(x: ShortArray): ShortArray {
         val frameLen = TARGET_SAMPLE_RATE * 30 / 1000
         val frameCount = x.size / frameLen
         if (frameCount == 0) return x
@@ -61,19 +59,27 @@ class SpectralMatchEq(
         for (f in 0 until frameCount) {
             var sum = 0.0
             val base = f * frameLen
-            for (k in 0 until frameLen) sum += x[base + k] * x[base + k]
+            for (k in 0 until frameLen) {
+                val v = x[base + k].toDouble()
+                sum += v * v
+            }
             rms[f] = sqrt(sum / frameLen)
             if (rms[f] > maxRms) maxRms = rms[f]
         }
         val thr = maxOf(maxRms / 8.0, FULL_SCALE * dbToLinear(-50.0))
-        val out = ArrayList<Double>(x.size)
+        var voicedFrames = 0
+        for (f in 0 until frameCount) if (rms[f] >= thr) voicedFrames++
+        if (voicedFrames * frameLen < N) return x
+        val out = ShortArray(voicedFrames * frameLen)
+        var pos = 0
         for (f in 0 until frameCount) {
             if (rms[f] >= thr) {
                 val base = f * frameLen
-                for (k in 0 until frameLen) out.add(x[base + k])
+                x.copyInto(out, destinationOffset = pos, startIndex = base, endIndex = base + frameLen)
+                pos += frameLen
             }
         }
-        return if (out.size >= N) out.toDoubleArray() else x
+        return out
     }
 
     private fun smoothLog(y: DoubleArray): DoubleArray {
@@ -102,12 +108,13 @@ class SpectralMatchEq(
     }
 
     private fun wolaFilter(
-        x: DoubleArray,
+        x: ShortArray,
         gain: DoubleArray,
-    ): DoubleArray {
+    ): ShortArray {
         val gainFull = DoubleArray(N) { k -> if (k <= N / 2) gain[k] else gain[N - k] }
-        val out = DoubleArray(x.size)
-        val norm = DoubleArray(x.size)
+        val out = ShortArray(x.size)
+        val acc = DoubleArray(N)
+        val norm = DoubleArray(N)
         val re = DoubleArray(N)
         val im = DoubleArray(N)
         var i = 0
@@ -123,17 +130,22 @@ class SpectralMatchEq(
                 im[k] *= gainFull[k]
             }
             Fft.transform(re, im, inverse = true)
+
             for (k in 0 until N) {
-                val idx = i + k
-                if (idx < x.size) {
-                    out[idx] += re[k] * window[k]
-                    norm[idx] += window[k] * window[k]
-                }
+                acc[k] += re[k] * window[k]
+                norm[k] += window[k] * window[k]
             }
+            for (k in 0 until HOP) {
+                val idx = i + k
+                if (idx >= x.size) break
+                val y = if (norm[k] > 1e-9) acc[k] / norm[k] else acc[k]
+                out[idx] = y.roundToShortValue()
+            }
+            acc.copyInto(acc, destinationOffset = 0, startIndex = HOP, endIndex = N)
+            acc.fill(0.0, fromIndex = N - HOP, toIndex = N)
+            norm.copyInto(norm, destinationOffset = 0, startIndex = HOP, endIndex = N)
+            norm.fill(0.0, fromIndex = N - HOP, toIndex = N)
             i += HOP
-        }
-        for (n in x.indices) {
-            if (norm[n] > 1e-9) out[n] /= norm[n]
         }
         return out
     }
