@@ -20,6 +20,7 @@ class AnonenCloudEngine(
     private val onNoSubscription: (() -> Unit)? = null,
     private val isOnline: () -> Boolean = { true },
     private val cancel: TranscribeCancelController? = null,
+    private val stillConsented: (() -> Boolean)? = null,
     private val nowMillis: () -> Long = System::currentTimeMillis,
     private val opusEncode: ((ByteArray) -> ByteArray?)? = null,
     private val enclaveKeys: EnclaveKeys?,
@@ -80,6 +81,13 @@ class AnonenCloudEngine(
         }
     }
 
+    private fun stopIfConsentChanged(attempt: Int) {
+        if (stillConsented?.invoke() == false) {
+            DiagnosticsLog.log("送るのをやめた: 選んでいるモデルの扱いが変わった（attempt=$attempt）")
+            throw GatewayError(0, CONSENT_CHANGED, body = "")
+        }
+    }
+
     private fun transcribeWithRetry(
         audio: AudioUpload,
         model: String?,
@@ -120,12 +128,16 @@ class AnonenCloudEngine(
                 Thread.sleep(BACKOFF_MS[attempt.coerceAtMost(BACKOFF_MS.lastIndex)])
             }
 
+            stopIfConsentChanged(attempt)
+
             if (cancel?.isCancelled == true) {
                 DiagnosticsLog.log("転写中断: ユーザーキャンセル（attempt=$attempt）")
                 throw java.io.InterruptedIOException("transcribe cancelled by user")
             }
 
             val token = auth.getAccessToken()
+
+            stopIfConsentChanged(attempt)
 
             try {
                 val response =
@@ -278,6 +290,8 @@ class AnonenCloudEngine(
 
     companion object {
         private const val MAX_ATTEMPTS = 3
+
+        const val CONSENT_CHANGED = "consent_changed"
         private val BACKOFF_MS = longArrayOf(0, 1000, 2000)
 
         const val AUDIO_TOO_LONG_MESSAGE = "1 回の録音が長すぎました（スマホの中のモデルなら使えます）"

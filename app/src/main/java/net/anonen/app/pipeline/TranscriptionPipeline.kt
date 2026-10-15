@@ -1,6 +1,8 @@
 package net.anonen.app.pipeline
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import net.anonen.app.asr.TranscriptionEngine
 import net.anonen.app.core.AsrError
@@ -50,13 +52,34 @@ class TranscriptionPipeline(
     private val isCancelled: () -> Boolean = { false },
     private val savesUntranscribedAudio: Boolean = true,
     private val lostAccess: () -> Boolean = { false },
-    private val onResponse: () -> Unit = {},
+    private val onResponse: () -> Boolean = { true },
 ) {
     suspend fun run(wavBytes: ByteArray): PipelineOutcome {
-        val settings = settingsProvider()
-        val languageHint = LanguageHints.normalize(settings.languageHint)
+        val atStart = settingsProvider()
+        val languageHint = LanguageHints.normalize(atStart.languageHint)
+        val answer = transcribe(atStart, wavBytes, languageHint)
 
-        return when (val result = transcribe(settings, wavBytes, languageHint)) {
+        if (!onResponse()) throw CancellationException("録音は呼び元が引き取った（応答を待つ間にしまわれた）")
+
+        return withContext(NonCancellable) { finish(atStart, answer, wavBytes, languageHint) }
+    }
+
+    private suspend fun finish(
+        atStart: AnonenSettings,
+        answer: Answer,
+        wavBytes: ByteArray,
+        languageHint: String,
+    ): PipelineOutcome {
+        val result = answer.result
+
+        if (result is TranscriptionResult.Success && result.text.isNotBlank() && answer.measuredModel != null) {
+            runCatching { onAsrMeasured(answer.measuredModel, answer.asrMs, WavEncoder.durationMs(wavBytes)) }
+                .onFailure { DiagnosticsLog.log("速さを記録できず（${it.javaClass.simpleName}）") }
+        }
+
+        val settings = atStart.copy(historyRetention = reread(atStart.historyRetention))
+
+        return when (result) {
             is TranscriptionResult.Failure -> {
                 if (lostAccess()) return stoppedForLostAccess(settings, wavBytes)
 
@@ -84,6 +107,13 @@ class TranscriptionPipeline(
             }
         }
     }
+
+    private suspend fun reread(fallback: HistoryRetention): HistoryRetention =
+        try {
+            settingsProvider().historyRetention
+        } catch (e: Exception) {
+            fallback
+        }
 
     private suspend fun finishWithText(
         settings: AnonenSettings,
@@ -116,9 +146,11 @@ class TranscriptionPipeline(
         val delivery = deliver(text)
         DiagnosticsLog.log("転写成功 ${text.length}文字 → 配送=$delivery")
 
-        if (settings.historyEnabled && delivery != DeliveryOutcome.BLOCKED_PASSWORD) {
+        val retention = reread(settings.historyRetention)
+
+        if (retention.enabled && delivery != DeliveryOutcome.BLOCKED_PASSWORD) {
             runCatching {
-                saveHistory(text, durationMs, settings.historyRetention, wavBytes)
+                saveHistory(text, durationMs, retention, wavBytes)
             }.onFailure {
                 DiagnosticsLog.log("履歴に残せず（${it.javaClass.simpleName}）配送は成功")
             }
@@ -189,11 +221,17 @@ class TranscriptionPipeline(
             else -> FAILED_HISTORY_TEXT
         }
 
+    private class Answer(
+        val result: TranscriptionResult,
+        val measuredModel: String? = null,
+        val asrMs: Long = 0L,
+    )
+
     private suspend fun transcribe(
         settings: AnonenSettings,
         wavBytes: ByteArray,
         languageHint: String,
-    ): TranscriptionResult {
+    ): Answer {
         val engine = withContext(Dispatchers.IO) { engineFactory(settings) }
         val modelName = modelNameResolver(settings)
         DiagnosticsLog.log("転写リクエスト model=$modelName wav=${wavBytes.size}B")
@@ -203,20 +241,16 @@ class TranscriptionPipeline(
             withContext(Dispatchers.IO) {
                 engine.transcribe(TranscriptionRequest(wavBytes, languageHint, isCancelled))
             }
-        onResponse()
         val asrMs = android.os.SystemClock.elapsedRealtime() - asrStart
         DiagnosticsLog.log("転写応答 ${asrMs}ms")
 
-        if (result is TranscriptionResult.Success) {
-            if (result.text.isNotBlank()) onAsrMeasured(settings.selectedModel, asrMs, WavEncoder.durationMs(wavBytes))
-            return result
-        }
+        if (result is TranscriptionResult.Success) return Answer(result, settings.selectedModel, asrMs)
 
-        if (isCancelled()) return result
+        if (isCancelled()) return Answer(result)
 
         val fallbackId =
             DevFeaturesProvider.instance.fallbackModelId(settings.selectedModel)
-                ?: return result
+                ?: return Answer(result)
         DiagnosticsLog.log("フォールバック $modelName → $fallbackId")
 
         val fbSettings = settings.copy(selectedModel = fallbackId)
@@ -229,10 +263,7 @@ class TranscriptionPipeline(
         val fbMs = android.os.SystemClock.elapsedRealtime() - fbStart
         DiagnosticsLog.log("フォールバック応答 ${fbMs}ms")
 
-        if (fbResult is TranscriptionResult.Success && fbResult.text.isNotBlank()) {
-            onAsrMeasured(fallbackId, fbMs, WavEncoder.durationMs(wavBytes))
-        }
-        return fbResult
+        return if (fbResult is TranscriptionResult.Success) Answer(fbResult, fallbackId, fbMs) else Answer(fbResult)
     }
 
     companion object {

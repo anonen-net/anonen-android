@@ -60,6 +60,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.anonen.app.AnonenApp
+import net.anonen.app.cloud.CloudModelInfo
+import net.anonen.app.cloud.dataPolicy
+import net.anonen.app.core.AccessControl
+import net.anonen.app.core.ModelIds
 import net.anonen.app.core.setSensitivePlainText
 import net.anonen.app.dev.DevFeaturesProvider
 import net.anonen.app.history.HistoryAudioPlayer
@@ -117,6 +121,26 @@ internal fun HistoryScreen() {
         retranscriber.consumeMessage()
     }
 
+    var consentForRetranscribe by remember { mutableStateOf<Pair<HistoryEntry, CloudModelInfo>?>(null) }
+    var preparingRetranscribeId by remember { mutableStateOf<Long?>(null) }
+    consentForRetranscribe?.let { (entry, model) ->
+        ModelDataPolicyDialog(
+            model = model,
+            mode = PolicyDialogMode.RECONFIRM,
+            onDecline = {
+                consentForRetranscribe = null
+                scope.launch { app.settingsRepository.update { it.withDataPolicyDeclined(model.id) } }
+            },
+            onAccept = {
+                consentForRetranscribe = null
+                scope.launch {
+                    app.settingsRepository.update { it.withDataPolicyAcknowledged(model.dataPolicy().fingerprint) }
+                    retranscriber.retranscribe(entry)
+                }
+            },
+        )
+    }
+
     if (showClearDialog) {
         AnonenDialog(
             title = "全て削除しますか",
@@ -168,9 +192,23 @@ internal fun HistoryScreen() {
                 items(entries, key = { it.id }) { entry ->
                     HistoryRow(
                         entry = entry,
-                        retranscribing = retranscribingId == entry.id,
-                        retranscribeEnabled = retranscribingId == null,
-                        onRetranscribe = { retranscriber.retranscribe(entry) },
+                        retranscribing = retranscribingId == entry.id || preparingRetranscribeId == entry.id,
+                        retranscribeEnabled = retranscribingId == null && preparingRetranscribeId == null,
+                        onRetranscribe = {
+                            preparingRetranscribeId = entry.id
+                            scope.launch {
+                                try {
+                                    val needing = retranscribeNeedsConsent(app)
+                                    if (needing != null) {
+                                        consentForRetranscribe = entry to needing
+                                    } else {
+                                        retranscriber.retranscribe(entry)
+                                    }
+                                } finally {
+                                    preparingRetranscribeId = null
+                                }
+                            }
+                        },
                         onCopy = { copyToClipboard(context, TranscriptionPipeline.historyDisplayText(entry.text)) },
                         onDelete = {
                             if (playingId == entry.id) {
@@ -489,6 +527,13 @@ private fun DeleteButton(
     IconButton(onClick = onClick, enabled = enabled, colors = rowIconColors()) {
         Icon(Icons.Filled.Delete, contentDescription = "削除")
     }
+}
+
+private suspend fun retranscribeNeedsConsent(app: AnonenApp): CloudModelInfo? {
+    if (!app.settingsRepository.current().selectedModel.startsWith(ModelIds.ANONEN_CLOUD_PREFIX)) return null
+    if (app.entitlement.gate.value != AccessControl.AccessGate.ALLOWED) return null
+    app.cloudModels.refreshForConsent()
+    return app.cloudModels.selectedModelNeedingDisclosure(app.settingsRepository.current())
 }
 
 private fun copyToClipboard(

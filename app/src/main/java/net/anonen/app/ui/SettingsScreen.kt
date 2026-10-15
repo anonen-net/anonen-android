@@ -1,6 +1,5 @@
 package net.anonen.app.ui
 
-import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
@@ -76,6 +75,7 @@ import net.anonen.app.core.HistoryRetention
 import net.anonen.app.core.LanguageHints
 import net.anonen.app.core.ModelIds
 import net.anonen.app.core.ThemeMode
+import net.anonen.app.core.setSensitivePlainText
 import net.anonen.app.dev.DevFeaturesProvider
 import net.anonen.app.dev.DevSettingsSlot
 import net.anonen.app.history.AudioUsage
@@ -494,9 +494,8 @@ internal fun SupportActions(
                     )
                 val clipboard =
                     context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                clipboard.setPrimaryClip(
-                    ClipData.newPlainText("ANONEN diagnostics", report),
-                )
+
+                clipboard.setSensitivePlainText("ANONEN diagnostics", report)
                 Toast.makeText(context, "お問い合わせ情報をコピーしました", Toast.LENGTH_SHORT).show()
             },
         ) {

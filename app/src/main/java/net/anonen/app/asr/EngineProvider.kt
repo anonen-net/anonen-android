@@ -2,6 +2,7 @@ package net.anonen.app.asr
 
 import net.anonen.app.AnonenApp
 import net.anonen.app.cloud.AnonenCloudEngine
+import net.anonen.app.cloud.AnonenCloudModels
 import net.anonen.app.cloud.wantsFillerRemoval
 import net.anonen.app.core.AsrError
 import net.anonen.app.core.LocalModelInfo
@@ -41,6 +42,9 @@ object EngineProvider {
                 onModelUsed = onModelUsed,
                 onNoSubscription = { app.entitlement.onNoSubscription() },
                 cancel = cancel ?: app.transcribeCancel,
+                stillConsented = {
+                    AnonenCloudModels.selectedModelNeedingDisclosure(settings, app.cloudModels.models.value) == null
+                },
                 isOnline = { net.anonen.app.core.NetworkStatus.isOnline(app) },
                 opusEncode = cloudOpusEncoder(app),
                 enclaveKeys = app.enclaveKeys,

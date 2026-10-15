@@ -239,15 +239,16 @@ class AnonenCloudAuth(
     }
 
     fun logout() {
-        val fresh = accessToken?.takeIf { it.isFresh() }?.token
-        val refresh = if (fresh == null) loadRefreshToken() else null
-
-        synchronized(stateLock) {
-            sessionGeneration.incrementAndGet()
-            clearRefreshToken()
-            clearEmail()
-            accessToken = null
-        }
+        val (fresh, refresh) =
+            synchronized(stateLock) {
+                val fresh = accessToken?.takeIf { it.isFresh() }?.token
+                val refresh = if (fresh == null) loadRefreshToken() else null
+                sessionGeneration.incrementAndGet()
+                clearRefreshToken()
+                clearEmail()
+                accessToken = null
+                fresh to refresh
+            }
         revokeSessionAsync(fresh, refresh)
     }
 

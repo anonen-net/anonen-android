@@ -198,8 +198,8 @@ android {
         applicationId = "net.anonen.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 251
-        versionName = "1.0.124"
+        versionCode = 264
+        versionName = "1.0.137"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
@@ -347,4 +347,9 @@ dependencies {
 tasks.withType<Test>().configureEach {
     inputs.dir("src/main/res").withPathSensitivity(PathSensitivity.RELATIVE).withPropertyName("mainRes")
     inputs.dir("src/main/java").withPathSensitivity(PathSensitivity.RELATIVE).withPropertyName("mainJava")
+
+    inputs
+        .file(rootProject.file("NOTICE.md"))
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+        .withPropertyName("notice")
 }

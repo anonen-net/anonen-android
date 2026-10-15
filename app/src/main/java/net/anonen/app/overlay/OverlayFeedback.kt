@@ -1,6 +1,8 @@
 package net.anonen.app.overlay
 
 import android.view.HapticFeedbackConstants
+import net.anonen.app.inject.DeliveryOutcome
+import net.anonen.app.pipeline.PipelineOutcome
 
 enum class FeedbackEvent {
     NO_AUDIO,
@@ -147,6 +149,30 @@ fun OverlayFeedback.onScreen(
     when (event) {
         FeedbackEvent.RECORDING_DISCARDED, FeedbackEvent.TRANSCRIBE_CANCELLED -> !notificationsAllowed
         else -> true
+    }
+
+fun OverlayFeedback.afterDismissed(
+    outcome: PipelineOutcome,
+    accessibilityOn: Boolean,
+): Pair<String, String?>? =
+    when (outcome) {
+        is PipelineOutcome.Delivered ->
+            when (outcome.delivery) {
+                DeliveryOutcome.INJECTED -> null
+                DeliveryOutcome.CLIPBOARD_FALLBACK ->
+                    of(FeedbackEvent.COPIED, accessibilityOn = accessibilityOn).text to null
+                DeliveryOutcome.BLOCKED_PASSWORD -> of(FeedbackEvent.PASSWORD).text to null
+            }
+        is PipelineOutcome.AsrFailed ->
+            of(FeedbackEvent.NOT_TRANSCRIBED, audioKept = outcome.audioSavedToHistory).text to outcome.error.userMessage
+        is PipelineOutcome.EmptyTranscription ->
+            of(FeedbackEvent.NO_SPEECH, audioKept = outcome.audioSavedToHistory).text to null
+        is PipelineOutcome.Cancelled ->
+            if (outcome.byUser) {
+                of(FeedbackEvent.TRANSCRIBE_CANCELLED, audioKept = outcome.audioSavedToHistory).text to null
+            } else {
+                null
+            }
     }
 
 enum class Buzz { START, STOP, ERROR }

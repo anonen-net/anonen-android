@@ -524,6 +524,7 @@ class GatewayError(
                 "bad_response",
                 "usage_missing",
                 "max_retries",
+                "consent_changed",
             )
 
         fun codeFromWire(raw: String?): String = raw?.takeUnless { it in LOCAL_ONLY_CODES } ?: "unknown"

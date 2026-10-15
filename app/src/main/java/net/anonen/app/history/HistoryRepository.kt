@@ -1,6 +1,8 @@
 package net.anonen.app.history
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import net.anonen.app.pipeline.TranscriptionPipeline
 import java.io.File
 import java.io.IOException
@@ -13,6 +15,8 @@ class HistoryRepository(
 ) {
     val entries: Flow<List<HistoryEntry>> = dao.observeAll()
 
+    private val writeLock = Mutex()
+
     suspend fun add(
         text: String,
         durationMs: Long,
@@ -20,6 +24,18 @@ class HistoryRepository(
         wavBytes: ByteArray? = null,
         model: String? = null,
         audioLimit: Int = 0,
+    ): Unit =
+        writeLock.withLock {
+            addLocked(text, durationMs, limit, wavBytes, model, audioLimit)
+        }
+
+    private suspend fun addLocked(
+        text: String,
+        durationMs: Long,
+        limit: Int,
+        wavBytes: ByteArray?,
+        model: String?,
+        audioLimit: Int,
     ) {
         val audioFileName = saveAudio(wavBytes)
         val audioLost = audioFileName == null && audioDir != null && wavBytes != null && wavBytes.isNotEmpty()
@@ -40,17 +56,21 @@ class HistoryRepository(
             deleteAudio(audioFileName)
             throw e
         }
-        trimTo(limit)
-        dropAudioBeyond(audioLimit)
+        trimToLocked(limit)
+        dropAudioBeyondLocked(audioLimit)
     }
 
-    suspend fun trimTo(limit: Int) {
+    suspend fun trimTo(limit: Int): Unit = writeLock.withLock { trimToLocked(limit) }
+
+    private suspend fun trimToLocked(limit: Int) {
         if (limit <= 0) return
         dao.entriesBeyondLimit(limit).forEach { deleteAudio(it.audioFileName) }
         dao.trimToLimit(limit)
     }
 
-    suspend fun dropAudioBeyond(limit: Int): Int {
+    suspend fun dropAudioBeyond(limit: Int): Int = writeLock.withLock { dropAudioBeyondLocked(limit) }
+
+    private suspend fun dropAudioBeyondLocked(limit: Int): Int {
         if (limit <= 0) return 0
         val targets =
             dao.entriesWithAudioBeyond(limit)
@@ -85,43 +105,48 @@ class HistoryRepository(
         text: String,
         model: String? = null,
     ): Boolean =
-        inTransaction {
-            val before = dao.getById(id) ?: return@inTransaction false
+        writeLock.withLock {
+            inTransaction {
+                val before = dao.getById(id) ?: return@inTransaction false
 
-            dao.updateText(
-                id,
-                text,
-                model,
-                before.revisions.plusCapped(
-                    Revision(before.text, before.model, before.transcribedAt ?: before.timestamp),
-                ),
-                transcribedAt = System.currentTimeMillis(),
-            ) > 0
+                dao.updateText(
+                    id,
+                    text,
+                    model,
+                    before.revisions.plusCapped(
+                        Revision(before.text, before.model, before.transcribedAt ?: before.timestamp),
+                    ),
+                    transcribedAt = System.currentTimeMillis(),
+                ) > 0
+            }
         }
 
-    suspend fun delete(id: Long) {
-        deleteAudio(dao.getById(id)?.audioFileName)
-        dao.delete(id)
-    }
-
-    suspend fun clear() {
-        deleteAllAudioFiles()
-        dao.deleteAll()
-        runCatching { compactAfterClear?.invoke() }
-    }
-
-    suspend fun sweepOrphanAudio(): Int {
-        val dir = audioDir ?: return 0
-        val files = runCatching { dir.listFiles() }.getOrNull() ?: return 0
-        if (files.isEmpty()) return 0
-        val referenced = dao.allAudioFileNames().toSet()
-        val cutoff = System.currentTimeMillis() - ORPHAN_GRACE_MS
-        return files.count { f ->
-            f.name !in referenced &&
-                f.lastModified() < cutoff &&
-                runCatching { f.delete() }.getOrDefault(false)
+    suspend fun delete(id: Long): Unit =
+        writeLock.withLock {
+            deleteAudio(dao.getById(id)?.audioFileName)
+            dao.delete(id)
         }
-    }
+
+    suspend fun clear(): Unit =
+        writeLock.withLock {
+            deleteAllAudioFiles()
+            dao.deleteAll()
+            runCatching { compactAfterClear?.invoke() }
+        }
+
+    suspend fun sweepOrphanAudio(): Int =
+        writeLock.withLock {
+            val dir = audioDir ?: return@withLock 0
+            val files = runCatching { dir.listFiles() }.getOrNull() ?: return@withLock 0
+            if (files.isEmpty()) return@withLock 0
+            val referenced = dao.allAudioFileNames().toSet()
+            val cutoff = System.currentTimeMillis() - ORPHAN_GRACE_MS
+            files.count { f ->
+                f.name !in referenced &&
+                    f.lastModified() < cutoff &&
+                    runCatching { f.delete() }.getOrDefault(false)
+            }
+        }
 
     private fun saveAudio(wavBytes: ByteArray?): String? {
         if (wavBytes == null || wavBytes.isEmpty()) return null

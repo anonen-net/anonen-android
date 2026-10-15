@@ -40,12 +40,7 @@ jobs:
           test -d "$ndk" || "$sdkmanager" --install "ndk;29.0.14206865"
           test -d "$cmake" || "$sdkmanager" --install "cmake;3.31.6"
           export PATH="$cmake/bin:$PATH"
-          set -o pipefail
-          log="$RUNNER_TEMP/sherpa-onnx-build.log"
-          ANDROID_NDK_HOME="$ndk" tools/build-sherpa-onnx-no-tts.sh app/libs/sherpa-onnx-1.13.3-no-tts.aar | tee "$log"
-          if ! grep -q "the AAR matches the recorded build" "$log"; then
-            echo "::warning title=sherpa-onnx AAR::The AAR built in this run differs from the recorded build. Compare the hashes in this step's log before relying on the release."
-          fi
+          REQUIRE_EXPECTED_AAR=1 ANDROID_NDK_HOME="$ndk" tools/build-sherpa-onnx-no-tts.sh app/libs/sherpa-onnx-1.13.3-no-tts.aar
 
       - name: Assert the development source set is absent
         run: test ! -e app/src/dev

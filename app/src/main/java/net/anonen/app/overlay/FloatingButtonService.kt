@@ -19,8 +19,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.anonen.app.AnonenApp
@@ -65,7 +67,8 @@ class FloatingButtonService : Service() {
 
                 if (::view.isInitialized) {
                     view.post {
-                        if (state == ButtonState.TRANSCRIBING) setState(ButtonState.IDLE)
+                        val flowAlive = transcribeJob?.isActive == true
+                        if (state == ButtonState.TRANSCRIBING && !flowAlive) setState(ButtonState.IDLE)
                     }
                 }
             }
@@ -86,6 +89,9 @@ class FloatingButtonService : Service() {
     private val inFlightWav = AtomicReference<ByteArray?>(null)
 
     @Volatile
+    private var pipelineHolds: ByteArray? = null
+
+    @Volatile
     private var stopTarget: AccessibilityNodeInfo? = null
 
     private val recorder = WavRecorder()
@@ -97,6 +103,9 @@ class FloatingButtonService : Service() {
     private var themeMode = ThemeMode.SYSTEM
 
     private var selectedModel = ""
+
+    @Volatile
+    private var latestSettings: AnonenSettings? = null
 
     private var entitled = false
 
@@ -113,6 +122,8 @@ class FloatingButtonService : Service() {
     private var heldDiscardJob: Job? = null
 
     private var processingJob: Job? = null
+
+    private var transcribeJob: Job? = null
 
     private var countdownJob: Job? = null
 
@@ -188,7 +199,11 @@ class FloatingButtonService : Service() {
                 onAsrMeasured = { modelId, asrMs, audioMs -> app.modelStats.record(modelId, asrMs, audioMs) },
                 isCancelled = { app.transcribeCancel.isCancelled },
                 lostAccess = { app.transcribeCancel.cancelReason == TranscribeCancelController.Reason.LOST_ACCESS },
-                onResponse = { inFlightWav.set(null) },
+                onResponse = {
+                    val taken = inFlightWav.getAndSet(null)
+                    if (taken != null) pipelineHolds = taken
+                    taken != null
+                },
             )
 
         if (!startForegroundCompat(recording = false)) {
@@ -292,6 +307,7 @@ class FloatingButtonService : Service() {
         scope.launch {
             app.settingsRepository.settings.collect { s ->
                 selectedModel = s.selectedModel
+                latestSettings = s
                 view.pushToTalk = s.pushToTalk
                 themeMode = s.themeMode
                 view.darkTheme = isDarkTheme()
@@ -496,6 +512,16 @@ class FloatingButtonService : Service() {
             return
         }
 
+        val needingDisclosure = latestSettings?.let { app.cloudModels.selectedModelNeedingDisclosure(it) }
+        if (needingDisclosure != null) {
+            DiagnosticsLog.log("録音ブロック: 選択中のモデルの扱いが変わった（まだ確認していない）→ 選択を外す")
+            scope.launch { declineIfStillUnacknowledged(app, needingDisclosure.id) }
+            notifier.notifyNoModelSelected()
+            app.userNotices.post(getString(R.string.notice_no_model_selected))
+            fail(FeedbackEvent.NO_MODEL)
+            return
+        }
+
         if (focusedFieldIsBlockedPassword()) {
             DiagnosticsLog.log("録音ブロック: 入力欄がパスワードの欄")
             fail(FeedbackEvent.PASSWORD)
@@ -564,7 +590,7 @@ class FloatingButtonService : Service() {
 
             launch { runCatching { app.enclaveKeys.prefetch() } }
 
-            if (app.cloudModels.models.value.isEmpty()) launch { runCatching { app.cloudModels.refresh() } }
+            app.cloudModels.startConsentRefresh()
             val startMs = android.os.SystemClock.elapsedRealtime()
             runCatching { app.cloudClient.warm(app.cloudAuth.getAccessToken(), model) }
                 .onSuccess {
@@ -719,6 +745,16 @@ class FloatingButtonService : Service() {
         return refusal
     }
 
+    private suspend fun declineIfStillUnacknowledged(
+        app: AnonenApp,
+        cloudId: String,
+    ) {
+        app.settingsRepository.update { s ->
+            val stillUnacknowledged = app.cloudModels.selectedModelNeedingDisclosure(s)?.id == cloudId
+            if (stillUnacknowledged) s.withDataPolicyDeclined(cloudId) else s
+        }
+    }
+
     private fun refuseTranscription(refusal: RecordingAccessRules.Refusal) {
         val app = AnonenApp.from(this)
         when (refusal) {
@@ -746,27 +782,54 @@ class FloatingButtonService : Service() {
 
         stopTarget = AnonenAccessibilityService.instance?.findInputFocus()
         startForegroundCompat(recording = false, cancellableTranscribe = true)
-        scope.launch(Dispatchers.Default) {
-            try {
-                runTranscriptionFlow(take)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                AnonenApp.from(this@FloatingButtonService).logThrowable("transcribe-flow", e)
-                withContext(Dispatchers.Main) {
-                    notifier.notifyResult(fail(FeedbackEvent.INTERNAL_ERROR).text)
-                }
-            } finally {
-                withContext(NonCancellable + Dispatchers.Main) {
-                    @Suppress("DEPRECATION")
-                    stopTarget?.recycle()
-                    stopTarget = null
-                    if (isRunning && state != ButtonState.RECORDING) {
-                        startForegroundCompat(recording = false)
-                    }
+        transcribeJob =
+            scope.launch(Dispatchers.Default) {
+                transcribeFlowGuarded(take)
+            }
+    }
+
+    private suspend fun transcribeFlowGuarded(take: () -> RecordingResult?) {
+        try {
+            runTranscriptionFlow(take)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            AnonenApp.from(this@FloatingButtonService).logThrowable("transcribe-flow", e)
+
+            keepUnclaimedRecording()
+            withContext(Dispatchers.Main) {
+                notifier.notifyResult(fail(FeedbackEvent.INTERNAL_ERROR).text)
+            }
+        } finally {
+            keepUnclaimedRecording()
+            pipelineHolds = null
+
+            withContext(NonCancellable + Dispatchers.Main) {
+                @Suppress("DEPRECATION")
+                stopTarget?.recycle()
+                stopTarget = null
+                if (isRunning && state != ButtonState.RECORDING) {
+                    startForegroundCompat(recording = false)
                 }
             }
         }
+    }
+
+    private suspend fun keepUnclaimedRecording(): Boolean {
+        val leftover = inFlightWav.getAndSet(null) ?: return false
+        return keepRecording(leftover)
+    }
+
+    private suspend fun keepOwnedRecording(wav: ByteArray): Boolean {
+        val owned = inFlightWav.compareAndSet(wav, null) || pipelineHolds === wav
+        if (!owned) throw CancellationException("録音はしまったときの片づけが引き取った")
+        pipelineHolds = null
+        return keepRecording(wav)
+    }
+
+    private suspend fun keepRecording(wav: ByteArray): Boolean {
+        modelUsed = null
+        return withContext(NonCancellable) { runCatching { pipeline.preserveFailed(wav) }.getOrDefault(false) }
     }
 
     private suspend fun runTranscriptionFlow(take: () -> RecordingResult?) {
@@ -798,13 +861,44 @@ class FloatingButtonService : Service() {
             result.rawWav,
             wav,
         )
+
+        modelUsed = null
+        pipelineHolds = null
+
         inFlightWav.set(wav)
+
+        val app = AnonenApp.from(this@FloatingButtonService)
+        if (app.settingsRepository.current().selectedModel.startsWith(ModelIds.ANONEN_CLOUD_PREFIX)) {
+            app.cloudModels.refreshForConsent()
+            val needingDisclosure = app.cloudModels.selectedModelNeedingDisclosure(app.settingsRepository.current())
+            if (needingDisclosure != null) {
+                val claimed = inFlightWav.getAndSet(null)
+
+                modelUsed = null
+
+                val saved =
+                    withContext(NonCancellable) {
+                        val kept =
+                            claimed != null && runCatching { pipeline.preserveFailed(claimed) }.getOrDefault(false)
+                        runCatching { declineIfStillUnacknowledged(app, needingDisclosure.id) }
+                        kept
+                    }
+                DiagnosticsLog.log("転写ブロック: 送る直前に、選択中のモデルの扱いが変わっていた → 送らない（記録に残した=$saved）")
+                withContext(Dispatchers.Main) {
+                    setState(ButtonState.IDLE)
+                    notifier.notifyNoModelSelected()
+                    app.userNotices.post(getString(R.string.notice_no_model_selected))
+                    fail(FeedbackEvent.NO_MODEL)
+                }
+                return
+            }
+        }
         val pipelineOutcome =
             try {
-                pipeline.run(wav)
+                pipeline.run(wav).also { pipelineHolds = null }
             } catch (e: OutOfMemoryError) {
                 AnonenApp.from(this@FloatingButtonService).logThrowable("transcribe-oom", e)
-                val saved = runCatching { pipeline.preserveFailed(wav) }.getOrDefault(false)
+                val saved = keepOwnedRecording(wav)
                 PipelineOutcome.AsrFailed(
                     AsrError(
                         AsrError.Kind.CONFIG,
@@ -813,9 +907,19 @@ class FloatingButtonService : Service() {
                     ),
                     saved,
                 )
-            } finally {
-                inFlightWav.set(null)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                keepOwnedRecording(wav)
+                throw e
             }
+
+        if (!currentCoroutineContext().isActive) {
+            OverlayFeedback
+                .afterDismissed(pipelineOutcome, OverlayVisibility.accessibilityConnected.value)
+                ?.let { (title, text) -> notifier.notifyResult(title, text) }
+            return
+        }
         when (val outcome = pipelineOutcome) {
             is PipelineOutcome.Delivered ->
                 withContext(Dispatchers.Main) {
