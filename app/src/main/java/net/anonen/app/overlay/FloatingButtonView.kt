@@ -17,12 +17,20 @@ import android.view.animation.LinearInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.TextView
+import androidx.annotation.DrawableRes
 import net.anonen.app.R
 import net.anonen.app.settings.AnonenSettings
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
 enum class ButtonState { IDLE, RECORDING, TRANSCRIBING, ERROR }
+
+internal data class ButtonLook(
+    val face: Int,
+    val icon: Int,
+    @DrawableRes val iconRes: Int,
+    val label: String,
+)
 
 @SuppressLint("ViewConstructor")
 class FloatingButtonView(
@@ -174,50 +182,17 @@ class FloatingButtonView(
     }
 
     private fun applyStateVisual() {
-        val face = if (darkTheme) DARK_FACE else PAPER_WHITE
-        val green = if (darkTheme) DARK_GREEN else ACCENT_GREEN
-        val onGreen = if (darkTheme) DARK_ON_GREEN else PAPER_WHITE
+        val visual = look(currentState, darkTheme, idleAlpha)
         val red = if (darkTheme) DARK_RED else ERROR_RED
         val onRed = if (darkTheme) DARK_ON_RED else PAPER_WHITE
 
-        val faceColor: Int
-        val iconColor: Int
-        val iconRes: Int
-        val label: String
-        when (currentState) {
-            ButtonState.IDLE -> {
-                faceColor = withAlpha(face, idleAlpha)
-                iconColor = green
-                iconRes = R.drawable.ic_mic
-                label = "押して話す"
-            }
-            ButtonState.RECORDING -> {
-                faceColor = green
-                iconColor = onGreen
-                iconRes = R.drawable.ic_stop
-                label = "録音中"
-            }
-            ButtonState.TRANSCRIBING -> {
-                faceColor = face
-                iconColor = green
-                iconRes = R.drawable.ic_sync
-                label = "文字起こし中"
-            }
-            ButtonState.ERROR -> {
-                faceColor = red
-                iconColor = onRed
-                iconRes = R.drawable.ic_error
-                label = "できませんでした"
-            }
-        }
+        faceDrawable.setColor(if (cancelFlashing) red else visual.face)
 
-        faceDrawable.setColor(if (cancelFlashing) red else faceColor)
-
-        faceDrawable.setStroke(dp(2), if (darkTheme) RING_DARK else RING_LIGHT)
-        icon.setImageResource(iconRes)
-        icon.setColorFilter(if (cancelFlashing) onRed else iconColor)
-        countdown.setTextColor(if (cancelFlashing) onRed else iconColor)
-        contentDescription = label
+        faceDrawable.setStroke(dp(RING_DP), ringColor(darkTheme))
+        icon.setImageResource(visual.iconRes)
+        icon.setColorFilter(if (cancelFlashing) onRed else visual.icon)
+        countdown.setTextColor(if (cancelFlashing) onRed else visual.icon)
+        contentDescription = visual.label
         alpha = 1f
     }
 
@@ -233,14 +208,6 @@ class FloatingButtonView(
         cancelFlashing = false
     }
 
-    private fun withAlpha(
-        color: Int,
-        alpha: Float,
-    ): Int {
-        val a = (alpha.coerceIn(0f, 1f) * 255).roundToInt()
-        return (color and 0x00FFFFFF) or (a shl 24)
-    }
-
     fun release() {
         removeCallbacks(longPressRunnable)
         clearCancelFlash()
@@ -251,10 +218,10 @@ class FloatingButtonView(
         pulse =
             ObjectAnimator.ofPropertyValuesHolder(
                 icon,
-                PropertyValuesHolder.ofFloat(View.SCALE_X, 1f, 1.28f),
-                PropertyValuesHolder.ofFloat(View.SCALE_Y, 1f, 1.28f),
+                PropertyValuesHolder.ofFloat(View.SCALE_X, 1f, PULSE_SCALE),
+                PropertyValuesHolder.ofFloat(View.SCALE_Y, 1f, PULSE_SCALE),
             ).apply {
-                duration = 520
+                duration = PULSE_MS
                 repeatMode = ObjectAnimator.REVERSE
                 repeatCount = ObjectAnimator.INFINITE
                 start()
@@ -264,7 +231,7 @@ class FloatingButtonView(
     private fun startRotate() {
         rotate =
             ObjectAnimator.ofFloat(icon, View.ROTATION, 0f, 360f).apply {
-                duration = 850
+                duration = ROTATE_MS
                 repeatCount = ObjectAnimator.INFINITE
                 interpolator = LinearInterpolator()
                 start()
@@ -391,6 +358,45 @@ class FloatingButtonView(
         const val COUNTDOWN_TEXT_RATIO = 0.36f
 
         const val CANCEL_FLASH_MS = 220L
+
+        const val RING_DP = 2
+
+        const val PULSE_MS = 520L
+        const val PULSE_SCALE = 1.28f
+
+        const val ROTATE_MS = 850L
+
+        fun look(
+            state: ButtonState,
+            dark: Boolean,
+            idleAlpha: Float,
+        ): ButtonLook {
+            val face = if (dark) DARK_FACE else PAPER_WHITE
+            val green = if (dark) DARK_GREEN else ACCENT_GREEN
+            val onGreen = if (dark) DARK_ON_GREEN else PAPER_WHITE
+            return when (state) {
+                ButtonState.IDLE -> ButtonLook(withAlpha(face, idleAlpha), green, R.drawable.ic_mic, "押して話す")
+                ButtonState.RECORDING -> ButtonLook(green, onGreen, R.drawable.ic_stop, "録音中")
+                ButtonState.TRANSCRIBING -> ButtonLook(face, green, R.drawable.ic_sync, "文字起こし中")
+                ButtonState.ERROR ->
+                    ButtonLook(
+                        if (dark) DARK_RED else ERROR_RED,
+                        if (dark) DARK_ON_RED else PAPER_WHITE,
+                        R.drawable.ic_error,
+                        "できませんでした",
+                    )
+            }
+        }
+
+        fun ringColor(dark: Boolean): Int = if (dark) RING_DARK else RING_LIGHT
+
+        fun withAlpha(
+            color: Int,
+            alpha: Float,
+        ): Int {
+            val a = (alpha.coerceIn(0f, 1f) * 255).roundToInt()
+            return (color and 0x00FFFFFF) or (a shl 24)
+        }
 
         const val HAIRLINE_LIGHT = 0x400A0A0A
         const val RING_LIGHT = 0xB30A0A0A.toInt()
