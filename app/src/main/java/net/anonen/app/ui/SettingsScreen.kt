@@ -203,7 +203,6 @@ private fun CloudSignedInView(
     account: CloudAccountStatus?,
     onLogout: () -> Unit,
 ) {
-    val context = LocalContext.current
     Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -250,17 +249,23 @@ private fun CloudSignedInView(
         }
 
         Spacer(Modifier.height(4.dp))
-        TextButton(
-            onClick = {
-                runCatching {
-                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(ACCOUNT_DELETION_URL)))
-                }.onFailure {
-                    Toast.makeText(context, "ページを開けませんでした", Toast.LENGTH_SHORT).show()
-                }
-            },
-        ) {
-            Text("アカウントを削除するには", style = MaterialTheme.typography.bodySmall)
-        }
+        AccountDeletionButton()
+    }
+}
+
+@Composable
+internal fun AccountDeletionButton() {
+    val context = LocalContext.current
+    TextButton(
+        onClick = {
+            runCatching {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(ACCOUNT_DELETION_URL)))
+            }.onFailure {
+                Toast.makeText(context, "ページを開けませんでした", Toast.LENGTH_SHORT).show()
+            }
+        },
+    ) {
+        Text("アカウントを削除するには", style = MaterialTheme.typography.bodySmall)
     }
 }
 

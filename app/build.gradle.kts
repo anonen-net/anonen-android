@@ -198,8 +198,8 @@ android {
         applicationId = "net.anonen.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 271
-        versionName = "1.0.144"
+        versionCode = 276
+        versionName = "1.0.149"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")

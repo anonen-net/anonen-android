@@ -11,11 +11,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.LineBreak
 import androidx.compose.ui.unit.dp
 
 internal data class DialogButton(
@@ -35,7 +37,7 @@ internal fun AnonenDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismissRequest,
-        title = { Text(title) },
+        title = { Text(title, style = LocalTextStyle.current.copy(lineBreak = TITLE_LINE_BREAK)) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 content()
@@ -72,3 +74,5 @@ private fun DialogActionButton(button: DialogButton) {
         OutlinedButton(onClick = button.onClick, modifier = modifier, shape = shape) { label() }
     }
 }
+
+private val TITLE_LINE_BREAK = LineBreak.Simple.copy(wordBreak = LineBreak.WordBreak.Phrase)

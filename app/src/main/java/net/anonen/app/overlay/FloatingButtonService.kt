@@ -572,7 +572,7 @@ class FloatingButtonService : Service() {
         return passwordVerdict(insertIntoPasswordFields, detected) == PasswordVerdict.BLOCK
     }
 
-    private fun recordingLimitSeconds(app: AnonenApp): Int? = app.recordingLimits.limitSecondsFor(selectedModel)
+    private fun recordingLimitSeconds(app: AnonenApp): Int = app.recordingLimits.recordingLimitSecondsFor(selectedModel)
 
     private fun warmCloudConnection(trigger: String) {
         val app = AnonenApp.from(this)

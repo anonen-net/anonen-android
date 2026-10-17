@@ -12,11 +12,16 @@ class RecordingLimits {
     fun limitSecondsFor(selectedModel: String): Int? =
         if (LocalModelInfo.fromId(selectedModel) != null) null else maxRecordingSeconds
 
+    fun recordingLimitSecondsFor(selectedModel: String): Int =
+        limitSecondsFor(selectedModel) ?: LOCAL_MAX_RECORDING_SECONDS
+
     fun update(maxRequestSeconds: Int?) {
         gatewayMaxRequestSeconds = maxRequestSeconds?.takeIf { it > 0 }
     }
 
     companion object {
         const val FALLBACK_MAX_RECORDING_SECONDS = 240
+
+        const val LOCAL_MAX_RECORDING_SECONDS = 600
     }
 }

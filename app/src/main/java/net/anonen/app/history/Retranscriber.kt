@@ -48,6 +48,21 @@ class Retranscriber(
 
     private var runningCancel: TranscribeCancelController? = null
 
+    @Volatile
+    private var usageConfirmedAt: Long? = null
+
+    suspend fun needsUsageConfirm(nowMs: Long = android.os.SystemClock.elapsedRealtime()): Boolean =
+        RetranscribeRules.needsUsageConfirm(
+            selectedModel = app.settingsRepository.current().selectedModel,
+            allowed = app.entitlement.gate.value == AccessControl.AccessGate.ALLOWED,
+            confirmedAtMs = usageConfirmedAt,
+            nowMs = nowMs,
+        )
+
+    fun usageConfirmed(nowMs: Long = android.os.SystemClock.elapsedRealtime()) {
+        usageConfirmedAt = nowMs
+    }
+
     init {
 
         scope.launch {

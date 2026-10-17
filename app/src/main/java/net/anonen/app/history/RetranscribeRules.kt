@@ -2,6 +2,7 @@ package net.anonen.app.history
 
 import net.anonen.app.cloud.AnonenCloudEngine
 import net.anonen.app.core.AccessControl
+import net.anonen.app.core.ModelIds
 import net.anonen.app.pipeline.PipelineOutcome
 import java.util.Locale
 
@@ -24,6 +25,23 @@ object RetranscribeRules {
         if (limitSeconds == null) return false
         val seconds = (audioMs + 999) / 1000
         return seconds > limitSeconds
+    }
+
+    const val USAGE_CONFIRM = "もう一度文字起こしすると、使える分が減ります。"
+    const val USAGE_CONFIRM_GO = "文字起こしする"
+    const val USAGE_CONFIRM_STOP = "やめる"
+
+    const val USAGE_CONFIRM_QUIET_MS = 3 * 60_000L
+
+    fun needsUsageConfirm(
+        selectedModel: String,
+        allowed: Boolean,
+        confirmedAtMs: Long?,
+        nowMs: Long,
+    ): Boolean {
+        if (!selectedModel.startsWith(ModelIds.ANONEN_CLOUD_PREFIX) || !allowed) return false
+        val at = confirmedAtMs ?: return true
+        return (nowMs - at) !in 0 until USAGE_CONFIRM_QUIET_MS
     }
 
     sealed interface Start {

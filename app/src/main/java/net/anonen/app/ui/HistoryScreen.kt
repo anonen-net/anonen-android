@@ -68,6 +68,7 @@ import net.anonen.app.core.setSensitivePlainText
 import net.anonen.app.dev.DevFeaturesProvider
 import net.anonen.app.history.HistoryAudioPlayer
 import net.anonen.app.history.HistoryEntry
+import net.anonen.app.history.RetranscribeRules
 import net.anonen.app.pipeline.TranscriptionPipeline
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -123,6 +124,8 @@ internal fun HistoryScreen() {
 
     var consentForRetranscribe by remember { mutableStateOf<Pair<HistoryEntry, CloudModelInfo>?>(null) }
     var preparingRetranscribeId by remember { mutableStateOf<Long?>(null) }
+
+    var checkingRetranscribe by remember { mutableStateOf(false) }
     consentForRetranscribe?.let { (entry, model) ->
         ModelDataPolicyDialog(
             model = model,
@@ -138,6 +141,40 @@ internal fun HistoryScreen() {
                     retranscriber.retranscribe(entry)
                 }
             },
+        )
+    }
+
+    fun startRetranscribe(entry: HistoryEntry) {
+        preparingRetranscribeId = entry.id
+        scope.launch {
+            try {
+                val needing = retranscribeNeedsConsent(app)
+                if (needing != null) {
+                    consentForRetranscribe = entry to needing
+                } else {
+                    retranscriber.retranscribe(entry)
+                }
+            } finally {
+                preparingRetranscribeId = null
+            }
+        }
+    }
+
+    var usageConfirmFor by remember { mutableStateOf<HistoryEntry?>(null) }
+    usageConfirmFor?.let { entry ->
+        AnonenDialog(
+            title = RetranscribeRules.USAGE_CONFIRM,
+            onDismissRequest = { usageConfirmFor = null },
+            primary =
+                DialogButton(
+                    RetranscribeRules.USAGE_CONFIRM_GO,
+                    {
+                        usageConfirmFor = null
+                        retranscriber.usageConfirmed()
+                        startRetranscribe(entry)
+                    },
+                ),
+            secondary = DialogButton(RetranscribeRules.USAGE_CONFIRM_STOP, { usageConfirmFor = null }, filled = false),
         )
     }
 
@@ -195,17 +232,18 @@ internal fun HistoryScreen() {
                         retranscribing = retranscribingId == entry.id || preparingRetranscribeId == entry.id,
                         retranscribeEnabled = retranscribingId == null && preparingRetranscribeId == null,
                         onRetranscribe = {
-                            preparingRetranscribeId = entry.id
-                            scope.launch {
-                                try {
-                                    val needing = retranscribeNeedsConsent(app)
-                                    if (needing != null) {
-                                        consentForRetranscribe = entry to needing
-                                    } else {
-                                        retranscriber.retranscribe(entry)
+                            if (!checkingRetranscribe && preparingRetranscribeId == null) {
+                                checkingRetranscribe = true
+                                scope.launch {
+                                    try {
+                                        if (retranscriber.needsUsageConfirm()) {
+                                            usageConfirmFor = entry
+                                        } else {
+                                            startRetranscribe(entry)
+                                        }
+                                    } finally {
+                                        checkingRetranscribe = false
                                     }
-                                } finally {
-                                    preparingRetranscribeId = null
                                 }
                             }
                         },

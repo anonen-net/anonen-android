@@ -339,22 +339,7 @@ internal fun SubscriptionRequiredScreen(
             bottom = {
                 WallLinks(onViewHistory, onSupport = { supportOpen = true })
 
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "アカウントを削除するには",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                )
-                Spacer(Modifier.height(2.dp))
-                SelectionContainer {
-                    Text(
-                        ACCOUNT_DELETION_URL.removePrefix("https://"),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                    )
-                }
+                AccountDeletionButton()
             },
         ) {
             Spacer(Modifier.height(20.dp))
