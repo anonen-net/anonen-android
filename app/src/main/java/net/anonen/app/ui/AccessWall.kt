@@ -2,18 +2,24 @@ package net.anonen.app.ui
 
 import android.content.Context
 import android.provider.Settings
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
@@ -22,15 +28,20 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
@@ -39,15 +50,20 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.MotionDurationScale
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalConfiguration
@@ -59,7 +75,9 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.style.LineBreak
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -80,84 +98,208 @@ internal fun LoginScreen(
 ) {
     val scope = rememberCoroutineScope()
 
-    val demoAbove = fitsDemoAbove(DEMO_ABOVE_FORM_MIN_DP)
+    val form = rememberSignInFormState()
+    var onForm by rememberSaveable { mutableStateOf(false) }
+    var supportOpen by rememberSaveable { mutableStateOf(false) }
+    val back: () -> Unit = back@{
+        if (form.loading) return@back
+        if (form.otpSent) {
+            form.backToEmail()
+        } else {
+            onForm = false
+        }
+    }
+    BackHandler(enabled = onForm) { back() }
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(
-            modifier = Modifier.fillMaxSize().imePadding().verticalScroll(rememberScrollState()).padding(24.dp),
-        ) {
-            Spacer(Modifier.height(32.dp))
-            Text(
-                "あのねん",
-                style = MaterialTheme.typography.headlineMedium,
-                color = MaterialTheme.colorScheme.primary,
+        if (onForm) {
+            LoginFormPage(
+                app,
+                scope,
+                form,
+                onSignedIn,
+                onBack = back,
+                onSupport = { supportOpen = true },
             )
-            if (demoAbove) {
-                Spacer(Modifier.height(16.dp))
-
-                WallDemo()
-            }
-            Spacer(Modifier.height(10.dp))
-            Text(
-                "話すだけで、いま見ている画面に文字が入ります。",
-                style = MaterialTheme.typography.bodyMedium.copy(lineBreak = LineBreak.Heading),
-                color = MaterialTheme.colorScheme.onSurface,
+        } else {
+            LoginFirstPage(
+                onLogin = { onForm = true },
+                onViewHistory = onViewHistory,
+                onSupport = { supportOpen = true },
             )
-            Spacer(Modifier.height(24.dp))
+        }
+    }
+    if (supportOpen) WallSupportSheet(app) { supportOpen = false }
+}
 
+@Composable
+private fun LoginFirstPage(
+    onLogin: () -> Unit,
+    onViewHistory: () -> Unit,
+    onSupport: () -> Unit,
+) {
+    val demoAbove = fitsDemoAbove(DEMO_ABOVE_LOGIN_MIN_DP)
+    WallPage(modifier = Modifier.safeDrawingPadding(), bottom = { WallLinks(onViewHistory, onSupport) }) {
+        Spacer(Modifier.height(20.dp))
+        Text(
+            "あのねん",
+            style = MaterialTheme.typography.headlineMedium,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        if (demoAbove) {
+            Spacer(Modifier.height(16.dp))
+
+            WallDemo()
+        }
+        Spacer(Modifier.height(12.dp))
+
+        Text(
+            "話すだけで、いま見ている画面に文字が入ります。",
+            style = MaterialTheme.typography.bodyMedium.copy(lineBreak = LineBreak.Heading),
+            color = MaterialTheme.colorScheme.onSurface,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(40.dp))
+
+        Text(
+            "ご利用には、まず下のサイトでのお申し込みが必要です。",
+            style = MaterialTheme.typography.bodyMedium.copy(lineBreak = LineBreak.Heading),
+            color = MaterialTheme.colorScheme.onSurface,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(4.dp))
+        SiteAddress()
+        Spacer(Modifier.height(40.dp))
+        Button(onClick = onLogin, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp)) {
             Text(
-                "ご利用には、まず下のサイトでのお申し込みが必要です。",
-                style = MaterialTheme.typography.bodyMedium.copy(lineBreak = LineBreak.Heading),
-                color = MaterialTheme.colorScheme.onSurface,
+                LOGIN_WITH_EMAIL,
+                style = MaterialTheme.typography.labelLarge.copy(lineBreak = LineBreak.Heading),
                 textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth(),
             )
-            Spacer(Modifier.height(4.dp))
-            SiteAddress()
-            Spacer(Modifier.height(24.dp))
-
-            CloudSignInForm(
-                onSignedIn = { onSignedIn() },
-                auth = app.cloudAuth,
-                scope = scope,
-            )
-            if (!demoAbove) {
-                Spacer(Modifier.height(32.dp))
-                WallDemo()
-            }
-
-            Spacer(Modifier.height(24.dp))
-
-            TextButton(onClick = onViewHistory) {
-                Text("記録を見る")
-            }
-
-            WallSupportSection(app = app)
+        }
+        if (!demoAbove) {
+            Spacer(Modifier.height(32.dp))
+            WallDemo()
         }
     }
 }
 
 @Composable
-private fun WallSupportSection(app: AnonenApp) {
-    val settings by app.settingsRepository.settings.collectAsState(initial = null)
+internal fun LoginFormPage(
+    app: AnonenApp,
+    scope: CoroutineScope,
+    form: SignInFormState,
+    onSignedIn: () -> Unit,
+    onBack: () -> Unit,
+    onSupport: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
+        Box(modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 4.dp)) {
+            IconButton(onClick = onBack, enabled = !form.loading, modifier = Modifier.align(Alignment.CenterStart)) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = BACK_LABEL)
+            }
+            Text(
+                LOGIN_WITH_EMAIL,
+                style = MaterialTheme.typography.titleMedium.copy(lineBreak = LineBreak.Heading),
+                color = MaterialTheme.colorScheme.onSurface,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.align(Alignment.Center).padding(horizontal = 48.dp, vertical = 8.dp),
+            )
+        }
+        WallPage(
+            modifier = Modifier.weight(1f),
+            bottom = { WallLinks(onViewHistory = null, onSupport = onSupport) },
+        ) {
+            Spacer(Modifier.height(16.dp))
 
-    Spacer(Modifier.height(24.dp))
-    HorizontalDivider()
-    Spacer(Modifier.height(16.dp))
-    Text(
-        "うまくいかないとき",
-        style = MaterialTheme.typography.titleSmall,
-        color = MaterialTheme.colorScheme.onSurface,
-    )
-    Spacer(Modifier.height(10.dp))
-    SupportActions(app, settings)
-    Spacer(Modifier.height(24.dp))
+            CloudSignInForm(
+                onSignedIn = { onSignedIn() },
+                auth = app.cloudAuth,
+                scope = scope,
+                state = form,
+                asPage = true,
+            )
+        }
+    }
+}
+
+@Composable
+private fun WallPage(
+    modifier: Modifier,
+    bottom: @Composable ColumnScope.() -> Unit,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+        Column(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .heightIn(min = maxHeight)
+                    .padding(horizontal = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            content()
+            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.height(16.dp))
+            bottom()
+            Spacer(Modifier.height(16.dp))
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun WallLinks(
+    onViewHistory: (() -> Unit)?,
+    onSupport: () -> Unit,
+) {
+    FlowRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
+    ) {
+        if (onViewHistory != null) {
+            TextButton(onClick = onViewHistory) { Text("記録を見る") }
+        }
+        TextButton(onClick = onSupport) { Text(SUPPORT_TITLE) }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun WallSupportSheet(
+    app: AnonenApp,
+    onDismiss: () -> Unit,
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) { WallSupportContent(app) }
+}
+
+@Composable
+internal fun WallSupportContent(app: AnonenApp) {
+    val settings by app.settingsRepository.settings.collectAsState(initial = null)
+    Column(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(start = 24.dp, end = 24.dp, bottom = 24.dp),
+    ) {
+        Text(
+            SUPPORT_TITLE,
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Spacer(Modifier.height(14.dp))
+        SupportActions(app, settings)
+    }
 }
 
 @Composable
 internal fun CheckingScreen() {
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
-            modifier = Modifier.fillMaxSize().padding(24.dp),
+            modifier = Modifier.fillMaxSize().safeDrawingPadding().padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
@@ -184,6 +326,7 @@ internal fun SubscriptionRequiredScreen(
     val scope = rememberCoroutineScope()
     val account by app.cloudUsage.account.collectAsState()
     var rechecking by remember { mutableStateOf(false) }
+    var supportOpen by rememberSaveable { mutableStateOf(false) }
     val email = remember { app.cloudAuth.status().email ?: "" }
     val statusLabel =
         subscriptionStatusLabel(account?.subscriptionStatus ?: app.entitlement.lastKnownStatus())
@@ -191,21 +334,44 @@ internal fun SubscriptionRequiredScreen(
     val demoAbove = fitsDemoAbove(DEMO_ABOVE_BUTTON_MIN_DP)
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(
-            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+        WallPage(
+            modifier = Modifier.safeDrawingPadding(),
+            bottom = {
+                WallLinks(onViewHistory, onSupport = { supportOpen = true })
+
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "アカウントを削除するには",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(Modifier.height(2.dp))
+                SelectionContainer {
+                    Text(
+                        ACCOUNT_DELETION_URL.removePrefix("https://"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            },
         ) {
-            Spacer(Modifier.height(32.dp))
+            Spacer(Modifier.height(20.dp))
             Text(
                 if (checkFailed) "契約を確かめられません" else "ご契約が必要です",
                 style = MaterialTheme.typography.headlineSmall,
                 color = MaterialTheme.colorScheme.primary,
+                textAlign = TextAlign.Center,
             )
-            Spacer(Modifier.height(12.dp))
+
             if (email.isNotBlank()) {
+                Spacer(Modifier.height(8.dp))
                 Text(
                     email,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
                 )
             }
             statusLabel?.let {
@@ -214,27 +380,29 @@ internal fun SubscriptionRequiredScreen(
                     it,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.Center,
                 )
             }
-            Spacer(Modifier.height(16.dp))
+            if (demoAbove) {
+                Spacer(Modifier.height(24.dp))
+                WallDemo()
+            }
+            Spacer(Modifier.height(32.dp))
 
             Text(
                 if (checkFailed) {
                     "ネットにつながったら「もう一度確かめる」を押してください。"
                 } else {
-                    "下のサイトで契約したら、「もう一度確かめる」を押してください。"
+                    "下のサイトで契約したら、\n「もう一度確かめる」を押してください。"
                 },
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.bodyMedium.copy(lineBreak = LineBreak.Heading),
                 color = MaterialTheme.colorScheme.onSurface,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
             )
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(4.dp))
             SiteAddress()
             Spacer(Modifier.height(24.dp))
-            if (demoAbove) {
-                WallDemo()
-                Spacer(Modifier.height(24.dp))
-            }
-
             Button(
                 onClick = {
                     rechecking = true
@@ -260,14 +428,15 @@ internal fun SubscriptionRequiredScreen(
                     Text("もう一度確かめる")
                 }
             }
-            Spacer(Modifier.height(8.dp))
-            TextButton(onClick = onViewHistory, modifier = Modifier.fillMaxWidth()) {
-                Text("記録を見る")
-            }
             Spacer(Modifier.height(4.dp))
             var confirmLogout by remember { mutableStateOf(false) }
-            TextButton(onClick = { confirmLogout = true }, modifier = Modifier.fillMaxWidth()) {
-                Text("別のメールアドレスでログイン", color = MaterialTheme.colorScheme.error)
+            TextButton(onClick = { confirmLogout = true }) {
+                Text(
+                    "別のメールアドレスでログイン",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.labelLarge.copy(lineBreak = LineBreak.Heading),
+                    textAlign = TextAlign.Center,
+                )
             }
             if (confirmLogout) {
                 LogoutConfirmDialog(
@@ -281,34 +450,18 @@ internal fun SubscriptionRequiredScreen(
                 )
             }
             if (!demoAbove) {
-                Spacer(Modifier.height(24.dp))
+                Spacer(Modifier.height(32.dp))
                 WallDemo()
-            }
-
-            WallSupportSection(app = app)
-
-            Spacer(Modifier.height(24.dp))
-            Text(
-                "アカウントを削除するには",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(4.dp))
-            SelectionContainer {
-                Text(
-                    ACCOUNT_DELETION_URL.removePrefix("https://"),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
         }
     }
+    if (supportOpen) WallSupportSheet(app) { supportOpen = false }
 }
 
 @Composable
 internal fun HistoryWallScreen(onBack: () -> Unit) {
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -365,24 +518,75 @@ private fun WallDemo(modifier: Modifier = Modifier) {
     val frame by remember { derivedStateOf { if (still) WallDemoTimeline.FINAL else WallDemoTimeline.at(elapsedMs) } }
 
     val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    Box(modifier = modifier.fillMaxWidth().clearAndSetSemantics { contentDescription = WALL_DEMO_DESCRIPTION }) {
-        Column(
+    Box(
+        modifier =
+            modifier
+                .width(PHONE_WIDTH)
+                .clearAndSetSemantics { contentDescription = WALL_DEMO_DESCRIPTION }
+                .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
+                .drawWithContent {
+                    drawContent()
+                    drawRect(
+                        Brush.verticalGradient(PHONE_FADE_FROM to Color.Black, 1f to Color.Transparent),
+                        blendMode = BlendMode.DstIn,
+                    )
+                }.background(PHONE_BODY, PHONE_BODY_SHAPE)
+                .border(1.5.dp, PHONE_EDGE, PHONE_BODY_SHAPE)
+                .padding(start = 7.dp, top = 7.dp, end = 7.dp),
+    ) {
+        Box(
             modifier =
                 Modifier
                     .fillMaxWidth()
-                    .padding(end = DEMO_BUTTON_SIZE / 2)
-                    .background(MaterialTheme.colorScheme.surface, DEMO_FRAME_SHAPE)
-                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, DEMO_FRAME_SHAPE)
-                    .padding(start = 10.dp, top = 10.dp, bottom = 10.dp, end = 10.dp + DEMO_BUTTON_SIZE / 2),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+                    .clip(PHONE_SCREEN_SHAPE)
+                    .background(MaterialTheme.colorScheme.surfaceContainer),
         ) {
-            DemoBubble(DEMO_AI_MESSAGE, mine = false)
-            DemoBubble(DEMO_MY_MESSAGE, mine = true)
-            Spacer(Modifier.height(2.dp))
-            DemoInput(frame)
+            PhoneCamera(Modifier.align(Alignment.TopCenter).padding(top = 7.5.dp))
+            Box(modifier = Modifier.padding(top = 26.dp, bottom = 30.dp)) {
+                Scaled(PHONE_CONTENT_SCALE) {
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 32.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            DemoBubble(DEMO_AI_MESSAGE, mine = false)
+                            DemoBubble(DEMO_MY_MESSAGE, mine = true)
+                            DemoInput(frame, Modifier.padding(top = 2.dp))
+                        }
+                        DemoButton(
+                            frame,
+                            dark,
+                            Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 12.dp),
+                        )
+                    }
+                }
+            }
         }
-        DemoButton(frame, dark, Modifier.align(Alignment.BottomEnd).padding(bottom = DEMO_BUTTON_BOTTOM))
     }
+}
+
+@Composable
+private fun PhoneCamera(modifier: Modifier = Modifier) {
+    Box(
+        modifier =
+            modifier
+                .size(12.dp)
+                .border(1.5.dp, PHONE_CAMERA_RING, CircleShape)
+                .padding(1.5.dp)
+                .background(PHONE_BODY, CircleShape),
+    )
+}
+
+@Composable
+private fun Scaled(
+    scale: Float,
+    content: @Composable () -> Unit,
+) {
+    val density = LocalDensity.current
+    CompositionLocalProvider(
+        LocalDensity provides Density(density.density * scale, fontScale = 1f),
+        content = content,
+    )
 }
 
 @Composable
@@ -411,7 +615,10 @@ private fun DemoBubble(
 }
 
 @Composable
-private fun DemoInput(frame: WallDemoFrame) {
+private fun DemoInput(
+    frame: WallDemoFrame,
+    modifier: Modifier = Modifier,
+) {
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
     val colors = MaterialTheme.colorScheme
     val caretColor = colors.primary
@@ -421,10 +628,10 @@ private fun DemoInput(frame: WallDemoFrame) {
         color = colors.onSurface,
         onTextLayout = { layout = it },
         modifier =
-            Modifier
+            modifier
                 .fillMaxWidth()
                 .border(1.5.dp, if (frame.textShown) colors.primary else colors.outlineVariant, DEMO_INPUT_SHAPE)
-                .padding(horizontal = 10.dp, vertical = 8.dp)
+                .padding(horizontal = 12.dp, vertical = 8.dp)
                 .drawWithContent {
                     if (frame.textShown) drawContent()
                     val l = layout
@@ -565,16 +772,26 @@ internal const val DEMO_TRANSCRIPT = "この物件の瑕疵は、売主の過失
 
 internal const val WALL_DEMO_DESCRIPTION = "使い方の例。丸いボタンを押して話し、もう一度押すと、話した文が入力欄に入ります"
 
-private val DEMO_FRAME_SHAPE = RoundedCornerShape(12.dp)
+private const val SUPPORT_TITLE = "うまくいかないとき"
+
+private val PHONE_WIDTH = 236.dp
+private val PHONE_BODY = Color(0xFF0E0D0C)
+private val PHONE_EDGE = Color(0x2EFAFAF9)
+private val PHONE_CAMERA_RING = Color(0x1AFAFAF9)
+private val PHONE_BODY_SHAPE = RoundedCornerShape(topStart = 34.dp, topEnd = 34.dp)
+private val PHONE_SCREEN_SHAPE = RoundedCornerShape(topStart = 27.dp, topEnd = 27.dp)
+private const val PHONE_CONTENT_SCALE = 0.8f
+
+private const val PHONE_FADE_FROM = 0.8f
+
 private val DEMO_BUBBLE_SHAPE = RoundedCornerShape(10.dp)
-private val DEMO_INPUT_SHAPE = RoundedCornerShape(8.dp)
+private val DEMO_INPUT_SHAPE = RoundedCornerShape(18.dp)
 private const val DEMO_BUBBLE_MAX_WIDTH = 0.85f
 
 private val DEMO_BUTTON_SIZE = 40.dp
-private val DEMO_BUTTON_BOTTOM = 14.dp
 
 private const val STILL_RECHECK_MS = 500L
 
 internal const val DEMO_ABOVE_BUTTON_MIN_DP = 600
 
-internal const val DEMO_ABOVE_FORM_MIN_DP = 720
+internal const val DEMO_ABOVE_LOGIN_MIN_DP = 620
