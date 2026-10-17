@@ -16,5 +16,6 @@ internal object LegacyHistoryLabels {
             "（使える分を使い切ったので、文字にしていません）" to TranscriptionPipeline.CAP_EXCEEDED_HISTORY_TEXT,
             "（文字にできませんでした）" to TranscriptionPipeline.FAILED_HISTORY_TEXT,
             "（やめたので、文字にしていません）" to TranscriptionPipeline.CANCELLED_HISTORY_TEXT,
+            "（使える分を使い切ったので、文字起こししていません）" to TranscriptionPipeline.CAP_EXCEEDED_HISTORY_TEXT,
         )
 }

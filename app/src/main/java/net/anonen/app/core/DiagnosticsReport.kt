@@ -25,7 +25,7 @@ object DiagnosticsReport {
 
     const val CONTENTS =
         "入るもの: 日時と時間帯・アプリの版・スマホの機種・Android の版・許可の状態・使っているモデル・アプリの動き" +
-            "（ログイン中はアカウント ID の先頭 8 文字・契約・使った量も）\n" +
+            "（ログイン中はアカウント ID の先頭 8 文字・契約・使用量も）\n" +
             "入らないもの: メールアドレス・文字起こしした内容"
 
     data class Environment(

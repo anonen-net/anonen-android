@@ -1,5 +1,6 @@
 package net.anonen.app.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -11,6 +12,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -37,7 +39,7 @@ internal fun AnonenDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismissRequest,
-        title = { Text(title, style = LocalTextStyle.current.copy(lineBreak = TITLE_LINE_BREAK)) },
+        title = { Text(title, style = LocalTextStyle.current.copy(lineBreak = DIALOG_LINE_BREAK)) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 content()
@@ -75,4 +77,37 @@ private fun DialogActionButton(button: DialogButton) {
     }
 }
 
-private val TITLE_LINE_BREAK = LineBreak.Simple.copy(wordBreak = LineBreak.WordBreak.Phrase)
+@Composable
+internal fun AnonenConfirmDialog(
+    text: String,
+    onDismissRequest: () -> Unit,
+    confirmLabel: String,
+    onConfirm: () -> Unit,
+    dismissLabel: String,
+    onDismiss: () -> Unit,
+) {
+    val shape = RoundedCornerShape(8.dp)
+    AlertDialog(
+        onDismissRequest = onDismissRequest,
+        shape = RoundedCornerShape(16.dp),
+        text = {
+            Text(
+                text,
+                style = MaterialTheme.typography.bodyMedium.copy(lineBreak = DIALOG_LINE_BREAK),
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        },
+        confirmButton = { Button(onClick = onConfirm, shape = shape) { Text(confirmLabel) } },
+        dismissButton = {
+            OutlinedButton(
+                onClick = onDismiss,
+                shape = shape,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
+            ) { Text(dismissLabel) }
+        },
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+    )
+}
+
+private val DIALOG_LINE_BREAK = LineBreak.Simple.copy(wordBreak = LineBreak.WordBreak.Phrase)

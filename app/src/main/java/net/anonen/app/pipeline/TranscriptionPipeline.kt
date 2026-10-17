@@ -269,7 +269,7 @@ class TranscriptionPipeline(
     companion object {
         const val AUDIO_TOO_LONG_HISTORY_TEXT = "（長すぎて、文字起こししていません）"
 
-        const val CAP_EXCEEDED_HISTORY_TEXT = "（使える分を使い切ったので、文字起こししていません）"
+        const val CAP_EXCEEDED_HISTORY_TEXT = "（使用量が上限に達したので、文字起こししていません）"
 
         const val FAILED_HISTORY_TEXT = "（文字起こしできませんでした）"
 

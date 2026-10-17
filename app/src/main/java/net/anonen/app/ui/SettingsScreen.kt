@@ -534,7 +534,7 @@ private fun UsageSection(
     val usage by app.cloudUsage.usage.collectAsState()
     val snapshot = usage ?: return
 
-    SettingsGroup("使った量") {
+    SettingsGroup("使用量") {
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
             UsageBar(
                 label = "今週",
@@ -549,7 +549,7 @@ private fun UsageSection(
             if (longLeft < weekLeft) {
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "この 28 日で使える分が、先になくなります（残り ${formatUsageDuration(longLeft)}）",
+                    "この 28 日の使用量が、先に上限に達します（残り ${formatUsageDuration(longLeft)}）",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                 )

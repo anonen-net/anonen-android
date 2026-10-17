@@ -162,19 +162,17 @@ internal fun HistoryScreen() {
 
     var usageConfirmFor by remember { mutableStateOf<HistoryEntry?>(null) }
     usageConfirmFor?.let { entry ->
-        AnonenDialog(
-            title = RetranscribeRules.USAGE_CONFIRM,
+        AnonenConfirmDialog(
+            text = RetranscribeRules.USAGE_CONFIRM,
             onDismissRequest = { usageConfirmFor = null },
-            primary =
-                DialogButton(
-                    RetranscribeRules.USAGE_CONFIRM_GO,
-                    {
-                        usageConfirmFor = null
-                        retranscriber.usageConfirmed()
-                        startRetranscribe(entry)
-                    },
-                ),
-            secondary = DialogButton(RetranscribeRules.USAGE_CONFIRM_STOP, { usageConfirmFor = null }, filled = false),
+            confirmLabel = RetranscribeRules.USAGE_CONFIRM_GO,
+            onConfirm = {
+                usageConfirmFor = null
+                retranscriber.usageConfirmed()
+                startRetranscribe(entry)
+            },
+            dismissLabel = RetranscribeRules.USAGE_CONFIRM_STOP,
+            onDismiss = { usageConfirmFor = null },
         )
     }
 

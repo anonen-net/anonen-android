@@ -27,7 +27,7 @@ object RetranscribeRules {
         return seconds > limitSeconds
     }
 
-    const val USAGE_CONFIRM = "もう一度文字起こしすると、使える分が減ります。"
+    const val USAGE_CONFIRM = "もう一度文字起こしすると、\n使用量に加算されます。"
     const val USAGE_CONFIRM_GO = "文字起こしする"
     const val USAGE_CONFIRM_STOP = "やめる"
 
