@@ -107,6 +107,8 @@ class FloatingButtonService : Service() {
     @Volatile
     private var latestSettings: AnonenSettings? = null
 
+    private var recordingGeneration = 0
+
     private var entitled = false
 
     private var recordingAccount: String? = null
@@ -522,6 +524,14 @@ class FloatingButtonService : Service() {
             return
         }
 
+        if (selectedModel.startsWith(ModelIds.ANONEN_CLOUD_PREFIX) && app.enclaveKeys.knownOutdated) {
+            DiagnosticsLog.log("録音ブロック: このアプリはサーバーより古い（更新が必要）")
+
+            scope.launch(Dispatchers.IO) { runCatching { app.enclaveKeys.prefetch() } }
+            showUpdateRequired(audioKept = false)
+            return
+        }
+
         if (focusedFieldIsBlockedPassword()) {
             DiagnosticsLog.log("録音ブロック: 入力欄がパスワードの欄")
             fail(FeedbackEvent.PASSWORD)
@@ -533,7 +543,8 @@ class FloatingButtonService : Service() {
             return
         }
 
-        warmCloudConnection("録音開始")
+        recordingGeneration++
+        warmCloudConnection(WARM_ON_RECORDING)
 
         setState(ButtonState.RECORDING)
         recordingStartedAt = android.os.SystemClock.elapsedRealtime()
@@ -576,6 +587,7 @@ class FloatingButtonService : Service() {
 
     private fun warmCloudConnection(trigger: String) {
         val app = AnonenApp.from(this)
+        val generation = recordingGeneration
         scope.launch(Dispatchers.IO) {
             val settings = app.settingsRepository.current()
             if (!settings.selectedModel.startsWith(ModelIds.ANONEN_CLOUD_PREFIX)) return@launch
@@ -588,7 +600,20 @@ class FloatingButtonService : Service() {
                     .removePrefix(ModelIds.ANONEN_CLOUD_PREFIX)
                     .ifBlank { null }
 
-            launch { runCatching { app.enclaveKeys.prefetch() } }
+            launch {
+                runCatching { app.enclaveKeys.prefetch() }
+
+                if (trigger == WARM_ON_RECORDING && app.enclaveKeys.knownOutdated) {
+                    withContext(Dispatchers.Main) {
+                        val sameRecording = recordingGeneration == generation
+                        val cloud = selectedModel.startsWith(ModelIds.ANONEN_CLOUD_PREFIX)
+                        if (state == ButtonState.RECORDING && sameRecording && cloud) {
+                            DiagnosticsLog.log("録音中に分かった: このアプリはサーバーより古い → 止める")
+                            stopAndTranscribe()
+                        }
+                    }
+                }
+            }
 
             app.cloudModels.startConsentRefresh()
             val startMs = android.os.SystemClock.elapsedRealtime()
@@ -827,6 +852,11 @@ class FloatingButtonService : Service() {
         return keepRecording(wav)
     }
 
+    private fun blocksForOutdatedServer(): Boolean {
+        val model = latestSettings?.selectedModel ?: return false
+        return model.startsWith(ModelIds.ANONEN_CLOUD_PREFIX) && AnonenApp.from(this).enclaveKeys.knownOutdated
+    }
+
     private suspend fun keepRecording(wav: ByteArray): Boolean {
         modelUsed = null
         return withContext(NonCancellable) { runCatching { pipeline.preserveFailed(wav) }.getOrDefault(false) }
@@ -841,6 +871,15 @@ class FloatingButtonService : Service() {
                 DiagnosticsLog.log("録音が空（マイク入力なし）")
                 notifier.notifyResult(fail(FeedbackEvent.NO_AUDIO).text)
             }
+            return
+        }
+
+        if (blocksForOutdatedServer()) {
+            val saved = result.processedWav?.let { keepRecording(it) } ?: preserveUndetectedAudio(result.rawWav)
+            DiagnosticsLog.log("転写ブロック: このアプリはサーバーより古い → 送らない（記録に残した=$saved）")
+
+            notifier.notifyUpdateRequired(saved)
+            withContext(Dispatchers.Main) { fail(FeedbackEvent.UPDATE_REQUIRED) }
             return
         }
         val wav = result.processedWav
@@ -915,6 +954,11 @@ class FloatingButtonService : Service() {
             }
 
         if (!currentCoroutineContext().isActive) {
+            val failed = pipelineOutcome as? PipelineOutcome.AsrFailed
+            if (failed != null && failed.error.updateRequired) {
+                notifier.notifyUpdateRequired(failed.audioSavedToHistory)
+                return
+            }
             OverlayFeedback
                 .afterDismissed(pipelineOutcome, OverlayVisibility.accessibilityConnected.value)
                 ?.let { (title, text) -> notifier.notifyResult(title, text) }
@@ -936,6 +980,11 @@ class FloatingButtonService : Service() {
                 }
             is PipelineOutcome.AsrFailed ->
                 withContext(Dispatchers.Main) {
+                    if (outcome.error.updateRequired) {
+                        showUpdateRequired(outcome.audioSavedToHistory)
+                        return@withContext
+                    }
+
                     val fb = fail(FeedbackEvent.NOT_TRANSCRIBED, audioKept = outcome.audioSavedToHistory)
                     notifier.notifyResult(fb.text, outcome.error.userMessage)
                 }
@@ -962,18 +1011,21 @@ class FloatingButtonService : Service() {
 
     private suspend fun preserveUndetectedAudio(rawWav: ByteArray): Boolean {
         val app = AnonenApp.from(this)
-        val settings = app.settingsRepository.current()
-        if (!settings.historyEnabled) return false
-        return runCatching {
-            app.historyRepository.add(
-                TranscriptionPipeline.NO_SPEECH_HISTORY_TEXT,
-                0L,
-                settings.historyLimit,
-                rawWav,
-                null,
-                settings.historyAudioLimit,
-            )
-        }.isSuccess
+
+        return withContext(NonCancellable) {
+            val settings = app.settingsRepository.current()
+            if (!settings.historyEnabled) return@withContext false
+            runCatching {
+                app.historyRepository.add(
+                    TranscriptionPipeline.NO_SPEECH_HISTORY_TEXT,
+                    0L,
+                    settings.historyLimit,
+                    rawWav,
+                    null,
+                    settings.historyAudioLimit,
+                )
+            }.isSuccess
+        }
     }
 
     private fun setState(newState: ButtonState) {
@@ -999,6 +1051,11 @@ class FloatingButtonService : Service() {
             delay(2500)
             if (state == ButtonState.ERROR) setState(ButtonState.IDLE)
         }
+    }
+
+    private fun showUpdateRequired(audioKept: Boolean) {
+        notifier.notifyUpdateRequired(audioKept)
+        fail(FeedbackEvent.UPDATE_REQUIRED)
     }
 
     private fun fail(
@@ -1042,6 +1099,9 @@ class FloatingButtonService : Service() {
                 }
                 FeedbackAction.UNDO_DISCARD -> {
                     { undoDiscard() }
+                }
+                FeedbackAction.UPDATE_APP -> {
+                    { openStorePage(this) }
                 }
             }
         bubble.show(
@@ -1126,6 +1186,8 @@ class FloatingButtonService : Service() {
 
     companion object {
         private const val INPUT_LINGER_MS = 200L
+
+        private const val WARM_ON_RECORDING = "録音開始"
 
         private const val PROCESSING_SLOW_MS = 15_000L
 

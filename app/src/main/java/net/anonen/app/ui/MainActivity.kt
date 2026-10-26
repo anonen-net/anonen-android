@@ -32,6 +32,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -40,8 +41,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.anonen.app.AnonenApp
 import net.anonen.app.core.AccessControl
+import net.anonen.app.core.ModelIds
 import net.anonen.app.core.ThemeMode
+import net.anonen.app.core.UPDATE_REQUIRED_MESSAGE
+import net.anonen.app.core.UPDATE_REQUIRED_REASON
 import net.anonen.app.dev.DevFeaturesProvider
+import net.anonen.app.overlay.UPDATE_ACTION_LABEL
+import net.anonen.app.overlay.UPDATE_DISMISS_LABEL
+import net.anonen.app.overlay.openStorePage
 
 class MainActivity : ComponentActivity() {
     private var chooseModelRequested by mutableStateOf(false)
@@ -51,6 +58,8 @@ class MainActivity : ComponentActivity() {
 
         if (savedInstanceState == null) {
             chooseModelRequested = opensModelChoice(intent.getBooleanExtra(EXTRA_CHOOSE_MODEL, false), intent.flags)
+
+            AnonenApp.from(this).updateNoticeClosedSince.value = null
         }
         setContent {
             val app = AnonenApp.from(this)
@@ -114,6 +123,15 @@ private fun AccessGatedApp(
                         scope.launch {
                             withContext(Dispatchers.IO) { runCatching { app.cloudUsage.fetch() } }
                         }
+
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                val model = app.settingsRepository.current().selectedModel
+                                if (model.startsWith(ModelIds.ANONEN_CLOUD_PREFIX)) {
+                                    runCatching { app.enclaveKeys.prefetch() }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -123,7 +141,11 @@ private fun AccessGatedApp(
 
     BackHandler(enabled = showHistory) { showHistory = false }
     when {
-        gate == AccessControl.AccessGate.ALLOWED -> AnonenAppUi(chooseModel, onChooseModelHandled)
+        gate == AccessControl.AccessGate.ALLOWED -> {
+            AnonenAppUi(chooseModel, onChooseModelHandled)
+
+            UpdateRequiredNotice(app)
+        }
 
         showHistory -> HistoryWallScreen(onBack = { showHistory = false })
 
@@ -143,6 +165,41 @@ private fun AccessGatedApp(
             )
     }
 }
+
+@Composable
+private fun UpdateRequiredNotice(app: AnonenApp) {
+    val context = LocalContext.current
+    val outdated by app.enclaveKeys.outdated.collectAsState()
+    val settings by app.settingsRepository.settings.collectAsState(initial = null)
+    val asked by app.retranscriber.updateRequired.collectAsState()
+    val closedSince by app.updateNoticeClosedSince.collectAsState()
+    val since = outdated?.since
+    val cloud = settings?.selectedModel?.startsWith(ModelIds.ANONEN_CLOUD_PREFIX) == true
+    if (!showsUpdateNotice(asked, since, closedSince, cloud)) return
+    val close = {
+        app.updateNoticeClosedSince.value = since
+        app.retranscriber.consumeUpdateRequired()
+    }
+    AnonenConfirmDialog(
+        title = UPDATE_REQUIRED_MESSAGE,
+        text = UPDATE_REQUIRED_REASON,
+        onDismissRequest = close,
+        confirmLabel = UPDATE_ACTION_LABEL,
+        onConfirm = {
+            close()
+            openStorePage(context)
+        },
+        dismissLabel = UPDATE_DISMISS_LABEL,
+        onDismiss = close,
+    )
+}
+
+internal fun showsUpdateNotice(
+    asked: Boolean,
+    since: Long?,
+    closedSince: Long?,
+    cloud: Boolean,
+): Boolean = asked || (since != null && since != closedSince && cloud)
 
 @Composable
 private fun AnonenAppUi(

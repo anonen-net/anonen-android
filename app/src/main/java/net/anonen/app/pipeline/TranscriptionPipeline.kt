@@ -201,6 +201,8 @@ class TranscriptionPipeline(
         DiagnosticsLog.log("転写失敗: 録音 WAV を履歴に保存（全損にしない）")
 
         if (error.httpStatus == 401 || error.httpStatus == 402) return error to true
+
+        if (error.updateRequired) return error to true
         return error.copy(userMessage = error.userMessage + AUDIO_SAVED_SUFFIX) to true
     }
 

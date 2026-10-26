@@ -1,5 +1,9 @@
 package net.anonen.app.cloud.sealed
 
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -13,6 +17,7 @@ import net.anonen.app.core.DiagnosticsLog
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 interface EnclaveKeys {
@@ -25,6 +30,8 @@ interface EnclaveKeys {
     fun reacquire(): VerifiedEnclave?
 
     val lastRefusalWasUnknownImage: Boolean
+
+    val knownOutdated: Boolean get() = false
 }
 
 class EnclaveKeyProvider(
@@ -82,14 +89,40 @@ class EnclaveKeyProvider(
     override val lastRefusalWasUnknownImage: Boolean
         get() = unknownImage
 
+    data class Outdated(
+        val since: Long,
+        val seenAt: Long,
+    )
+
+    private val _outdated = MutableStateFlow<Outdated?>(null)
+
+    val outdated: StateFlow<Outdated?> = _outdated.asStateFlow()
+
+    override val knownOutdated: Boolean
+        get() = _outdated.value?.let { nowSeconds() - it.seenAt < OUTDATED_VERDICT_SECONDS } ?: false
+
+    private fun recordOutdated(seen: Boolean) {
+        val now = nowSeconds()
+        _outdated.update { old -> if (seen) Outdated(since = old?.since ?: now, seenAt = now) else null }
+    }
+
+    private val lastFetchStartedAtSeconds = AtomicLong(Long.MIN_VALUE / 2)
+
     override fun prefetch() {
-        val left = cachedRemainingSeconds()
-        if (left != null && left > REFRESH_MARGIN_SECONDS) return
+        if (_outdated.value != null) {
+            val now = nowSeconds()
+            val last = lastFetchStartedAtSeconds.get()
+            if (now - last < OUTDATED_RECHECK_SECONDS || !lastFetchStartedAtSeconds.compareAndSet(last, now)) return
+        } else {
+            val left = cachedRemainingSeconds()
+            if (left != null && left > REFRESH_MARGIN_SECONDS) return
+        }
 
         fetchAndCache(updatesRefusal = false)
     }
 
-    override fun acquire(): VerifiedEnclave? = cachedValid() ?: fetchAndCache(updatesRefusal = true)
+    override fun acquire(): VerifiedEnclave? =
+        (if (knownOutdated) null else cachedValid()) ?: fetchAndCache(updatesRefusal = true)
 
     override fun reacquire(): VerifiedEnclave? {
         cached.set(null)
@@ -99,6 +132,7 @@ class EnclaveKeyProvider(
     private fun fetchAndVerify(updatesRefusal: Boolean): VerifiedEnclave? {
         if (updatesRefusal) unknownImage = false
         if (nowSeconds() < unsupportedUntilSeconds) return null
+        lastFetchStartedAtSeconds.set(nowSeconds())
         val nonce = SealedWire.newClientNonce()
         val body =
             runCatching {
@@ -127,6 +161,8 @@ class EnclaveKeyProvider(
 
         return when (result) {
             is AttestationResult.Verified -> {
+                recordOutdated(seen = false)
+
                 DiagnosticsLog.log(
                     "封緘: 検証 OK key_id=${result.enclave.keyIdHex} " +
                         "image=${result.enclave.imageDigest}",
@@ -136,6 +172,7 @@ class EnclaveKeyProvider(
             is AttestationResult.Rejected -> {
                 val onlyUnknownImage = result.rejectedOnlyForUnknownImage()
                 if (updatesRefusal) unknownImage = onlyUnknownImage
+                recordOutdated(seen = onlyUnknownImage)
                 if (onlyUnknownImage) {
                     DiagnosticsLog.log("封緘: このイメージを受理リストに持っていない — アプリが古い")
                 } else {
@@ -202,5 +239,9 @@ class EnclaveKeyProvider(
         const val REFRESH_MARGIN_SECONDS = 600L
 
         const val JWKS_TTL_SECONDS = 3600L
+
+        const val OUTDATED_VERDICT_SECONDS = 6 * 3600L
+
+        const val OUTDATED_RECHECK_SECONDS = 30L
     }
 }

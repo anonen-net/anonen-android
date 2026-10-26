@@ -234,10 +234,10 @@ internal fun HistoryScreen() {
                                 checkingRetranscribe = true
                                 scope.launch {
                                     try {
-                                        if (retranscriber.needsUsageConfirm()) {
-                                            usageConfirmFor = entry
-                                        } else {
-                                            startRetranscribe(entry)
+                                        when {
+                                            retranscriber.blocksForUpdate() -> Unit
+                                            retranscriber.needsUsageConfirm() -> usageConfirmFor = entry
+                                            else -> startRetranscribe(entry)
                                         }
                                     } finally {
                                         checkingRetranscribe = false

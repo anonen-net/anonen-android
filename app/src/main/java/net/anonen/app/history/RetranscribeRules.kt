@@ -65,6 +65,7 @@ object RetranscribeRules {
     data class Result(
         val message: String,
         val updatedText: String?,
+        val updateRequired: Boolean = false,
     )
 
     fun resultOf(
@@ -75,7 +76,7 @@ object RetranscribeRules {
             is PipelineOutcome.Delivered ->
                 Result("文字起こししました（${seconds(elapsedMs)}秒）", outcome.text)
 
-            is PipelineOutcome.AsrFailed -> Result(outcome.error.userMessage, null)
+            is PipelineOutcome.AsrFailed -> Result(outcome.error.userMessage, null, outcome.error.updateRequired)
             is PipelineOutcome.EmptyTranscription -> Result(EMPTY, null)
 
             is PipelineOutcome.Cancelled -> Result(INTERRUPTED, null)

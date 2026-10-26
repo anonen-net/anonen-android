@@ -7,6 +7,7 @@ import net.anonen.app.core.DiagnosticsLog
 import net.anonen.app.core.LanguageHints
 import net.anonen.app.core.TranscriptionRequest
 import net.anonen.app.core.TranscriptionResult
+import net.anonen.app.core.UPDATE_REQUIRED_MESSAGE
 import java.io.IOException
 
 class AnonenCloudEngine(
@@ -251,17 +252,12 @@ class AnonenCloudEngine(
 
                 e.isSealUnavailable -> "安全に送れる状態を確認できませんでした（音声は送っていません）"
 
-                e.isSealOutdated ->
-                    "このアプリでは、いまのサーバーを確認できません。" +
-                        "アプリを最新版に更新してください（音声は送っていません）"
+                e.isSealOutdated || e.isSealOutdatedAfterSend -> UPDATE_REQUIRED_MESSAGE
 
                 e.isSealFailed -> "音声を保護できなかったため、送信を中止しました"
 
                 e.isSealLostAfterSend ->
                     "サーバーに送り直せませんでした。もう一度お試しください（音声は保護して送りました）"
-                e.isSealOutdatedAfterSend ->
-                    "このアプリでは、いまのサーバーを確認できません。" +
-                        "アプリを最新版に更新してください（音声は保護して送りました）"
                 e.isSealBroken ->
                     "保護された応答を受け取れませんでした。時間をおいて試してください（音声は保護して送りました）"
                 e.isSealRefused ->
@@ -285,6 +281,7 @@ class AnonenCloudEngine(
             httpStatus = e.httpStatus,
             fallbackHint = if (e.isCapExceeded) e.fallback else null,
             capResetAt = if (e.isCapExceeded) e.resetsAt else null,
+            updateRequired = e.isSealOutdated || e.isSealOutdatedAfterSend,
         )
     }
 

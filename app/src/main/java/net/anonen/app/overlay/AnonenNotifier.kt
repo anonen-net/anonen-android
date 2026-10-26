@@ -8,7 +8,9 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.drawable.Icon
 import android.os.Build
+import androidx.core.net.toUri
 import net.anonen.app.R
+import net.anonen.app.core.DiagnosticsLog
 import net.anonen.app.ui.MainActivity
 
 class AnonenNotifier(private val context: Context) {
@@ -135,6 +137,36 @@ class AnonenNotifier(private val context: Context) {
             builder.setContentText(text)
 
             builder.setStyle(Notification.BigTextStyle().bigText(text))
+        }
+        manager.notify(RESULT_NOTIFICATION_ID, builder.build())
+    }
+
+    fun notifyUpdateRequired(audioKept: Boolean) {
+        val open =
+            PendingIntent.getActivity(
+                context,
+                UPDATE_REQUEST_CODE,
+                storePageIntent(context.packageName, viaPlayApp = false),
+                PendingIntent.FLAG_IMMUTABLE,
+            )
+        val builder =
+            Notification.Builder(context, CHANNEL_RESULT)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle(OverlayFeedback.of(FeedbackEvent.UPDATE_REQUIRED).text)
+                .setContentIntent(open)
+                .setAutoCancel(true)
+                .addAction(
+                    Notification.Action
+                        .Builder(
+                            Icon.createWithResource(context, R.drawable.ic_notification),
+                            UPDATE_ACTION_LABEL,
+                            open,
+                        )
+                        .build(),
+                )
+        OverlayFeedback.updateRequiredDetail(audioKept)?.let {
+            builder.setContentText(it)
+            builder.setStyle(Notification.BigTextStyle().bigText(it))
         }
         manager.notify(RESULT_NOTIFICATION_ID, builder.build())
     }
@@ -305,6 +337,8 @@ class AnonenNotifier(private val context: Context) {
         private const val DISCARDED_NOTIFICATION_ID = 5
 
         private const val CHOOSE_MODEL_REQUEST_CODE = 6
+
+        private const val UPDATE_REQUEST_CODE = 7
         private const val CHANNEL_SERVICE = "service"
         private const val CHANNEL_RESULT = "result"
 
@@ -315,3 +349,21 @@ class AnonenNotifier(private val context: Context) {
         }
     }
 }
+
+internal fun storePageIntent(
+    packageName: String,
+    viaPlayApp: Boolean,
+): Intent =
+    if (viaPlayApp) {
+        Intent(Intent.ACTION_VIEW, "market://details?id=$packageName".toUri()).setPackage(PLAY_STORE_PACKAGE)
+    } else {
+        Intent(Intent.ACTION_VIEW, "https://play.google.com/store/apps/details?id=$packageName".toUri())
+    }.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+internal fun openStorePage(context: Context) {
+    runCatching { context.startActivity(storePageIntent(context.packageName, viaPlayApp = true)) }
+        .recoverCatching { context.startActivity(storePageIntent(context.packageName, viaPlayApp = false)) }
+        .onFailure { DiagnosticsLog.log("Play の頁を開けなかった（${it.javaClass.simpleName}）") }
+}
+
+private const val PLAY_STORE_PACKAGE = "com.android.vending"

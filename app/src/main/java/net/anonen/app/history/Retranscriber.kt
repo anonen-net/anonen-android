@@ -16,6 +16,7 @@ import net.anonen.app.asr.EngineProvider
 import net.anonen.app.cloud.TranscribeCancelController
 import net.anonen.app.core.AccessControl
 import net.anonen.app.core.DiagnosticsLog
+import net.anonen.app.core.ModelIds
 import net.anonen.app.inject.DeliveryOutcome
 import net.anonen.app.pipeline.TranscriptionPipeline
 import net.anonen.app.record.WavEncoder
@@ -42,6 +43,23 @@ class Retranscriber(
 
     fun consumeMessage() {
         _message.value = null
+    }
+
+    private val _updateRequired = MutableStateFlow(false)
+
+    val updateRequired: StateFlow<Boolean> = _updateRequired.asStateFlow()
+
+    fun consumeUpdateRequired() {
+        _updateRequired.value = false
+    }
+
+    suspend fun blocksForUpdate(): Boolean {
+        if (app.entitlement.gate.value != AccessControl.AccessGate.ALLOWED) return false
+        if (!app.settingsRepository.current().selectedModel.startsWith(ModelIds.ANONEN_CLOUD_PREFIX)) return false
+        if (!app.enclaveKeys.knownOutdated) return false
+        scope.launch(Dispatchers.IO) { runCatching { app.enclaveKeys.prefetch() } }
+        _updateRequired.value = true
+        return true
     }
 
     private var runningJob: Job? = null
@@ -118,6 +136,11 @@ class Retranscriber(
                         return@launch
                     }
 
+                    if (blocksForUpdate()) {
+                        DiagnosticsLog.log("再転写を止めた: このアプリはサーバーより古い")
+                        return@launch
+                    }
+
                     lastModelUsed = null
 
                     launch(Dispatchers.IO) { runCatching { app.enclaveKeys.prefetch() } }
@@ -137,7 +160,11 @@ class Retranscriber(
                         "再転写 id=${entry.id} 更新=${result.updatedText != null} " +
                             "書き戻し=$written ${elapsed}ms",
                     )
-                    _message.value = if (written) result.message else RetranscribeRules.ROW_GONE
+                    if (result.updateRequired) {
+                        _updateRequired.value = true
+                    } else {
+                        _message.value = if (written) result.message else RetranscribeRules.ROW_GONE
+                    }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {

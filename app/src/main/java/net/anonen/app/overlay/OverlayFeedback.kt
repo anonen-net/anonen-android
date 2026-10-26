@@ -1,6 +1,7 @@
 package net.anonen.app.overlay
 
 import android.view.HapticFeedbackConstants
+import net.anonen.app.core.UPDATE_REQUIRED_MESSAGE
 import net.anonen.app.inject.DeliveryOutcome
 import net.anonen.app.pipeline.PipelineOutcome
 
@@ -14,6 +15,8 @@ enum class FeedbackEvent {
     PASSWORD,
 
     NOT_TRANSCRIBED,
+
+    UPDATE_REQUIRED,
 
     TRANSCRIBE_CANCELLED,
 
@@ -65,7 +68,13 @@ enum class FeedbackAction(
 
     CHOOSE_MODEL("モデルを選ぶ"),
     UNDO_DISCARD("元に戻す"),
+
+    UPDATE_APP(UPDATE_ACTION_LABEL),
 }
+
+const val UPDATE_ACTION_LABEL = "更新する"
+
+const val UPDATE_DISMISS_LABEL = "閉じる"
 
 data class Feedback(
     val text: String,
@@ -90,6 +99,7 @@ object OverlayFeedback {
             FeedbackEvent.PASSWORD -> Feedback("パスワードの欄には入れません", error = true)
             FeedbackEvent.NOT_TRANSCRIBED ->
                 Feedback(if (audioKept) "文字起こしできませんでした。$KEPT" else "文字起こしできませんでした", error = true)
+            FeedbackEvent.UPDATE_REQUIRED -> Feedback(UPDATE_REQUIRED_MESSAGE, FeedbackAction.UPDATE_APP, error = true)
             FeedbackEvent.TRANSCRIBE_CANCELLED -> Feedback(if (audioKept) "やめました。$KEPT" else "やめました")
             FeedbackEvent.RECORDING_DISCARDED ->
                 Feedback("録音を削除しました", if (audioKept) FeedbackAction.UNDO_DISCARD else FeedbackAction.NONE)
@@ -117,6 +127,8 @@ object OverlayFeedback {
             FeedbackEvent.RECORDING_HINT -> Feedback("もう一度押すと止まります。やめるときは長押し")
             FeedbackEvent.RECORDING_HINT_PTT -> Feedback("離すと止まります")
         }
+
+    fun updateRequiredDetail(audioKept: Boolean): String? = if (audioKept) KEPT else null
 }
 
 const val FIRST_USE_HINT_TIMES = 2
@@ -164,7 +176,12 @@ fun OverlayFeedback.afterDismissed(
                 DeliveryOutcome.BLOCKED_PASSWORD -> of(FeedbackEvent.PASSWORD).text to null
             }
         is PipelineOutcome.AsrFailed ->
-            of(FeedbackEvent.NOT_TRANSCRIBED, audioKept = outcome.audioSavedToHistory).text to outcome.error.userMessage
+            if (outcome.error.updateRequired) {
+                of(FeedbackEvent.UPDATE_REQUIRED).text to updateRequiredDetail(outcome.audioSavedToHistory)
+            } else {
+                val fb = of(FeedbackEvent.NOT_TRANSCRIBED, audioKept = outcome.audioSavedToHistory)
+                fb.text to outcome.error.userMessage
+            }
         is PipelineOutcome.EmptyTranscription ->
             of(FeedbackEvent.NO_SPEECH, audioKept = outcome.audioSavedToHistory).text to null
         is PipelineOutcome.Cancelled ->

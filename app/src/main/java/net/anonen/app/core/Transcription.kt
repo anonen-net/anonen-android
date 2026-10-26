@@ -20,8 +20,13 @@ data class AsrError(
     val fallbackHint: String? = null,
     val capResetAt: String? = null,
     val partialText: String? = null,
+    val updateRequired: Boolean = false,
 ) {
     enum class Kind { CONFIG, NETWORK, HTTP, PARSE, CANCELLED }
 
     val isCapExceeded: Boolean get() = fallbackHint != null || capResetAt != null
 }
+
+const val UPDATE_REQUIRED_MESSAGE = "アプリの更新が必要です"
+
+const val UPDATE_REQUIRED_REASON = "より快適に\nお使いいただけるよう、\nサーバーを更新しました。"

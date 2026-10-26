@@ -9,6 +9,7 @@ import androidx.room.withTransaction
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.anonen.app.asr.LocalModelManager
@@ -102,6 +103,8 @@ class AnonenApp : Application() {
         )
     }
     val cloudModels: AnonenCloudModels by lazy { AnonenCloudModels(cloudClient, SystemClock::elapsedRealtime) }
+
+    val updateNoticeClosedSince = MutableStateFlow<Long?>(null)
 
     val enclaveKeys: EnclaveKeyProvider by lazy {
         EnclaveKeyProvider(
