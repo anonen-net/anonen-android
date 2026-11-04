@@ -170,8 +170,8 @@ fun OverlayFeedback.afterDismissed(
     when (outcome) {
         is PipelineOutcome.Delivered ->
             when (outcome.delivery) {
-                DeliveryOutcome.INJECTED -> null
-                DeliveryOutcome.CLIPBOARD_FALLBACK ->
+                DeliveryOutcome.INJECTED, DeliveryOutcome.INJECTED_INTO_PASSWORD -> null
+                DeliveryOutcome.CLIPBOARD_FALLBACK, DeliveryOutcome.CLIPBOARD_FALLBACK_FROM_PASSWORD ->
                     of(FeedbackEvent.COPIED, accessibilityOn = accessibilityOn).text to null
                 DeliveryOutcome.BLOCKED_PASSWORD -> of(FeedbackEvent.PASSWORD).text to null
             }

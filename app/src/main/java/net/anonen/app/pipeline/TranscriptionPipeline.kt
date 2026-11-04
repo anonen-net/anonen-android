@@ -53,7 +53,11 @@ class TranscriptionPipeline(
     private val savesUntranscribedAudio: Boolean = true,
     private val lostAccess: () -> Boolean = { false },
     private val onResponse: () -> Boolean = { true },
+    private val stoppedAtPassword: () -> Boolean = { false },
 ) {
+    private fun keepsUntranscribedAudio(settings: AnonenSettings): Boolean =
+        savesUntranscribedAudio && settings.historyEnabled && !stoppedAtPassword()
+
     suspend fun run(wavBytes: ByteArray): PipelineOutcome {
         val atStart = settingsProvider()
         val languageHint = LanguageHints.normalize(atStart.languageHint)
@@ -148,7 +152,7 @@ class TranscriptionPipeline(
 
         val retention = reread(settings.historyRetention)
 
-        if (retention.enabled && delivery != DeliveryOutcome.BLOCKED_PASSWORD) {
+        if (retention.enabled && delivery.keepsHistory && !stoppedAtPassword()) {
             runCatching {
                 saveHistory(text, durationMs, retention, wavBytes)
             }.onFailure {
@@ -162,7 +166,7 @@ class TranscriptionPipeline(
 
     suspend fun preserveFailed(wavBytes: ByteArray): Boolean {
         val settings = settingsProvider()
-        if (!savesUntranscribedAudio || !settings.historyEnabled) return false
+        if (!keepsUntranscribedAudio(settings)) return false
         return runCatching { saveHistory(FAILED_HISTORY_TEXT, 0L, settings.historyRetention, wavBytes) }.isSuccess
     }
 
@@ -171,7 +175,7 @@ class TranscriptionPipeline(
         wavBytes: ByteArray,
     ): PipelineOutcome {
         val saved =
-            savesUntranscribedAudio && settings.historyEnabled &&
+            keepsUntranscribedAudio(settings) &&
                 runCatching { saveHistory(FAILED_HISTORY_TEXT, 0L, settings.historyRetention, wavBytes) }.isSuccess
         DiagnosticsLog.log("転写を止めた（認可を失った）入れない・履歴保存=$saved")
         return PipelineOutcome.Cancelled(saved, byUser = false)
@@ -181,7 +185,7 @@ class TranscriptionPipeline(
         settings: AnonenSettings,
         wavBytes: ByteArray,
     ): Boolean {
-        if (!savesUntranscribedAudio || !settings.historyEnabled) return false
+        if (!keepsUntranscribedAudio(settings)) return false
         return runCatching {
             saveHistory(CANCELLED_HISTORY_TEXT, 0L, settings.historyRetention, wavBytes)
         }.isSuccess
@@ -192,7 +196,7 @@ class TranscriptionPipeline(
         settings: AnonenSettings,
         wavBytes: ByteArray,
     ): Pair<AsrError, Boolean> {
-        if (!savesUntranscribedAudio || !settings.historyEnabled) return error to false
+        if (!keepsUntranscribedAudio(settings)) return error to false
         val saved =
             runCatching {
                 saveHistory(failedHistoryText(error), 0L, settings.historyRetention, wavBytes)
@@ -210,7 +214,7 @@ class TranscriptionPipeline(
         settings: AnonenSettings,
         wavBytes: ByteArray,
     ): Boolean {
-        if (!savesUntranscribedAudio || !settings.historyEnabled) return false
+        if (!keepsUntranscribedAudio(settings)) return false
         return runCatching {
             saveHistory(EMPTY_HISTORY_TEXT, 0L, settings.historyRetention, wavBytes)
         }.isSuccess

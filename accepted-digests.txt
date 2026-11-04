@@ -16,3 +16,4 @@
 # transcription for everyone who has not updated yet.
 
 sha256:ad9c650f0e8e179fe5c1b52111ea9b017b44a26fa0776cd7fa04f0ef882c7993
+sha256:3d93b6d23971542bcec9b31af3aa8bb666246605c844df119db4d16a2590dec6
