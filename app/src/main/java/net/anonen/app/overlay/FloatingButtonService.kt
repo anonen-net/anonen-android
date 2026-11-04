@@ -94,9 +94,6 @@ class FloatingButtonService : Service() {
     @Volatile
     private var stopTarget: AccessibilityNodeInfo? = null
 
-    @Volatile
-    private var stoppedAtPassword = false
-
     private val recorder = WavRecorder()
     private var sileroVad: SileroVad? = null
     private var state = ButtonState.IDLE
@@ -209,7 +206,6 @@ class FloatingButtonService : Service() {
                     if (taken != null) pipelineHolds = taken
                     taken != null
                 },
-                stoppedAtPassword = { stoppedAtPassword },
             )
 
         if (!startForegroundCompat(recording = false)) {
@@ -810,10 +806,6 @@ class FloatingButtonService : Service() {
         app.transcribeCancel.begin()
 
         stopTarget = AnonenAccessibilityService.instance?.findInputFocus()
-
-        stoppedAtPassword =
-            stopTarget?.let { isBlockedPasswordNode(it.isPassword, it.inputType) }
-                ?: (AnonenAccessibilityService.instance?.isCurrentInputPassword() == true)
         startForegroundCompat(recording = false, cancellableTranscribe = true)
         transcribeJob =
             scope.launch(Dispatchers.Default) {
@@ -976,8 +968,8 @@ class FloatingButtonService : Service() {
             is PipelineOutcome.Delivered ->
                 withContext(Dispatchers.Main) {
                     when (outcome.delivery) {
-                        DeliveryOutcome.INJECTED, DeliveryOutcome.INJECTED_INTO_PASSWORD -> setState(ButtonState.IDLE)
-                        DeliveryOutcome.CLIPBOARD_FALLBACK, DeliveryOutcome.CLIPBOARD_FALLBACK_FROM_PASSWORD -> {
+                        DeliveryOutcome.INJECTED -> setState(ButtonState.IDLE)
+                        DeliveryOutcome.CLIPBOARD_FALLBACK -> {
                             setState(ButtonState.IDLE)
                             notifier.notifyResult(say(FeedbackEvent.COPIED).text)
                         }
@@ -1022,7 +1014,7 @@ class FloatingButtonService : Service() {
 
         return withContext(NonCancellable) {
             val settings = app.settingsRepository.current()
-            if (!settings.historyEnabled || stoppedAtPassword) return@withContext false
+            if (!settings.historyEnabled) return@withContext false
             runCatching {
                 app.historyRepository.add(
                     TranscriptionPipeline.NO_SPEECH_HISTORY_TEXT,

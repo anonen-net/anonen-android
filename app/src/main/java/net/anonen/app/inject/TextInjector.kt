@@ -11,19 +11,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import net.anonen.app.core.DiagnosticsLog
 import net.anonen.app.core.setSensitivePlainText
 
-enum class DeliveryOutcome {
-    INJECTED,
-    CLIPBOARD_FALLBACK,
-    BLOCKED_PASSWORD,
-
-    INJECTED_INTO_PASSWORD,
-
-    CLIPBOARD_FALLBACK_FROM_PASSWORD,
-    ;
-
-    val keepsHistory: Boolean
-        get() = this == INJECTED || this == CLIPBOARD_FALLBACK
-}
+enum class DeliveryOutcome { INJECTED, CLIPBOARD_FALLBACK, BLOCKED_PASSWORD }
 
 class TextInjector(private val context: Context) {
     private val clipboard: ClipboardManager
@@ -43,17 +31,6 @@ class TextInjector(private val context: Context) {
         allowPasswordFields: Boolean = false,
         target: AccessibilityNodeInfo? = null,
     ): DeliveryOutcome {
-        var intoPassword = false
-        val outcome = deliverChecked(text, allowPasswordFields, target) { intoPassword = true }
-        return markPasswordField(outcome, intoPassword)
-    }
-
-    private fun deliverChecked(
-        text: String,
-        allowPasswordFields: Boolean,
-        target: AccessibilityNodeInfo?,
-        onAllowedPassword: () -> Unit,
-    ): DeliveryOutcome {
         val service = AnonenAccessibilityService.instance
         val focus = service?.findInputFocus()
         if (target != null) {
@@ -65,10 +42,8 @@ class TextInjector(private val context: Context) {
                     focus?.recycle()
                     return DeliveryOutcome.BLOCKED_PASSWORD
                 }
-                PasswordVerdict.ALLOWED_BY_SETTING -> {
-                    onAllowedPassword()
+                PasswordVerdict.ALLOWED_BY_SETTING ->
                     DiagnosticsLog.log("止めた時点の欄はパスワード欄と判定したが、設定に従って入れる: $why")
-                }
                 PasswordVerdict.NOT_PASSWORD -> Unit
             }
             val match = TextInjectionPolicy.targetMatch(true, focus != null, focus != null && focus == target)
@@ -88,10 +63,8 @@ class TextInjector(private val context: Context) {
                         DiagnosticsLog.log("パスワード欄と判定して配送しない: $why")
                         return DeliveryOutcome.BLOCKED_PASSWORD
                     }
-                    PasswordVerdict.ALLOWED_BY_SETTING -> {
-                        onAllowedPassword()
+                    PasswordVerdict.ALLOWED_BY_SETTING ->
                         DiagnosticsLog.log("パスワード欄と判定したが、設定に従って入れる: $why")
-                    }
                     PasswordVerdict.NOT_PASSWORD -> Unit
                 }
                 val outcome = injectIntoNode(focus, text)
@@ -109,10 +82,8 @@ class TextInjector(private val context: Context) {
                     DiagnosticsLog.log("パスワード欄と判定して配送しない: 入力接続の inputType")
                     return DeliveryOutcome.BLOCKED_PASSWORD
                 }
-                PasswordVerdict.ALLOWED_BY_SETTING -> {
-                    onAllowedPassword()
+                PasswordVerdict.ALLOWED_BY_SETTING ->
                     DiagnosticsLog.log("パスワード欄と判定したが、設定に従って入れる: 入力接続の inputType")
-                }
                 PasswordVerdict.NOT_PASSWORD -> Unit
             }
             if (service.commitTextThroughInputMethod(text)) {
@@ -290,14 +261,3 @@ internal class ClipboardCleanup<C : Any>(
         const val DELAY_MS = 1200L
     }
 }
-
-internal fun markPasswordField(
-    outcome: DeliveryOutcome,
-    intoPassword: Boolean,
-): DeliveryOutcome =
-    when {
-        !intoPassword -> outcome
-        outcome == DeliveryOutcome.INJECTED -> DeliveryOutcome.INJECTED_INTO_PASSWORD
-        outcome == DeliveryOutcome.CLIPBOARD_FALLBACK -> DeliveryOutcome.CLIPBOARD_FALLBACK_FROM_PASSWORD
-        else -> outcome
-    }
