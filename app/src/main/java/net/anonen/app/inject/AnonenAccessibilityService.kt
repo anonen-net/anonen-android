@@ -77,6 +77,13 @@ class AnonenAccessibilityService : AccessibilityService() {
             false
         }
 
+    fun isInputMethodReady(): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            isInputMethodReadyApi33()
+        } else {
+            false
+        }
+
     fun isCurrentInputPassword(): Boolean =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             isCurrentInputPasswordApi33()
@@ -94,6 +101,13 @@ class AnonenAccessibilityService : AccessibilityService() {
             true
         }.getOrDefault(false)
     }
+
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private fun isInputMethodReadyApi33(): Boolean =
+        runCatching {
+            val method = inputMethod ?: return@runCatching false
+            method.currentInputStarted && method.currentInputConnection != null
+        }.getOrDefault(false)
 
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private fun isCurrentInputPasswordApi33(): Boolean =

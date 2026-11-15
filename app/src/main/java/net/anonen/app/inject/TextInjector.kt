@@ -69,7 +69,7 @@ class TextInjector(private val context: Context) {
                         DiagnosticsLog.log("パスワード欄と判定したが、設定に従って入れる: $why")
                     PasswordVerdict.NOT_PASSWORD -> Unit
                 }
-                val outcome = injectIntoNode(focus, text)
+                val outcome = injectIntoNode(focus, text, allowPasswordFields)
                 if (outcome != null) {
                     return outcome
                 }
@@ -101,6 +101,7 @@ class TextInjector(private val context: Context) {
     private fun injectIntoNode(
         node: AccessibilityNodeInfo,
         text: String,
+        allowPasswordFields: Boolean,
     ): DeliveryOutcome? {
         when (
             TextInjectionPolicy.planFor(
@@ -113,27 +114,108 @@ class TextInjector(private val context: Context) {
             InjectionPlan.INPUT_CONNECTION_COMMIT -> {
                 val before = node.snapshot()
                 if (AnonenAccessibilityService.instance?.commitTextThroughInputMethod(text) == true) {
-                    return settle(InjectionRoute.INPUT_CONNECTION, node, before, text)
+                    return settle(verify(InjectionRoute.INPUT_CONNECTION, node, before, last = true), text)
                 }
             }
             InjectionPlan.STANDARD_SET_TEXT -> {
                 val before = node.snapshot()
-                if (setTextIntoNode(node, text)) return settle(InjectionRoute.SET_TEXT, node, before, text)
+                val sent = setTextIntoNode(node, text)
+                if (sent != null) {
+                    val check = setTextThenOthers(node, before, text, sent, allowPasswordFields)
+                    return settle(check, text)
+                }
                 if (node.hasAction(AccessibilityNodeInfo.ACTION_PASTE)) {
-                    return pasteIntoNode(node, text)
+                    return pasteAndVerify(node, text, last = true)?.let { settle(it, text) }
                 }
             }
-            InjectionPlan.ACCESSIBILITY_PASTE -> return pasteIntoNode(node, text)
+            InjectionPlan.ACCESSIBILITY_PASTE -> {
+                return pasteAndVerify(node, text, last = true)?.let { settle(it, text) }
+            }
             InjectionPlan.CLIPBOARD_FALLBACK -> return null
         }
         return null
     }
 
-    private fun pasteIntoNode(
+    private fun setTextThenOthers(
+        node: AccessibilityNodeInfo,
+        before: FieldSnapshot?,
+        text: String,
+        sent: SetTextSent,
+        allowPasswordFields: Boolean,
+    ): InjectionCheck {
+        val service = AnonenAccessibilityService.instance
+        val inputMethodReady = service != null && service.isInputMethodReady()
+
+        val verdict =
+            if (inputMethodReady) {
+                passwordVerdict(allowPasswordFields, service.isCurrentInputPassword())
+            } else {
+                PasswordVerdict.NOT_PASSWORD
+            }
+        val alternate =
+            InjectionChain.alternateAfterSetText(
+                inputMethodReady = inputMethodReady,
+                inputMethodPasswordBlocked = verdict == PasswordVerdict.BLOCK,
+                hasPaste = node.hasAction(AccessibilityNodeInfo.ACTION_PASTE),
+            )
+        val port =
+            object : SetTextFollowUp {
+                override fun verify(
+                    route: InjectionRoute,
+                    before: FieldSnapshot?,
+                    last: Boolean,
+                ) = verify(route, node, before, last)
+
+                override fun logRoute(
+                    route: InjectionRoute,
+                    check: InjectionCheck?,
+                ) = DiagnosticsLog.log(InjectionVerifier.logLine(route, check, node.isStandard()))
+
+                override fun logNotSent(route: InjectionRoute) =
+                    DiagnosticsLog.log(InjectionVerifier.notSentLine(route, node.isStandard()))
+
+                override fun logMoved() = DiagnosticsLog.log("届け始めたときの欄から移っていた（か、いまの欄が取れない）ので、代わりは入れずにコピーだけ")
+
+                override fun logPasswordAllowed() = DiagnosticsLog.log("パスワード欄と判定したが、設定に従って入れる: 入力接続の inputType")
+
+                override fun moveCursor() = moveCursor(node, sent.cursor)
+
+                override fun sameFieldFocused(): Boolean {
+                    val now = service?.findInputFocus() ?: return false
+                    val same = now == node
+                    @Suppress("DEPRECATION")
+                    now.recycle()
+                    return same
+                }
+
+                override fun setSelection(
+                    start: Int,
+                    end: Int,
+                ) = setSelection(node, start, end)
+
+                override fun read() = node.takeIf { runCatching { it.refresh() }.getOrDefault(false) }?.snapshot()
+
+                override fun sleep(ms: Long) = sleepUnlessInterrupted(ms)
+
+                override fun commit() = service?.commitTextThroughInputMethod(text) == true
+
+                override fun paste(before: FieldSnapshot?) = pasteAndVerify(node, text, last = true, before = before)
+            }
+        return InjectionChain.afterSetText(
+            before,
+            sent.sameText,
+            alternate,
+            port,
+            passwordAllowedBySetting = verdict == PasswordVerdict.ALLOWED_BY_SETTING,
+        )
+    }
+
+    private fun pasteAndVerify(
         node: AccessibilityNodeInfo,
         text: String,
-    ): DeliveryOutcome? {
-        val before = node.snapshot()
+        last: Boolean,
+        before: FieldSnapshot? = node.snapshot(),
+    ): InjectionCheck? {
         val previous = cleanup.beginPaste()
         clipboard.setSensitivePlainText(CLIP_LABEL, text)
         val pasted =
@@ -141,7 +223,7 @@ class TextInjector(private val context: Context) {
                 .getOrDefault(false)
 
         cleanup.afterPaste(previous, text, pasted)
-        return if (pasted) settle(InjectionRoute.PASTE, node, before, text) else null
+        return if (pasted) verify(InjectionRoute.PASTE, node, before, last) else null
     }
 
     private fun commitThroughInputMethod(
@@ -151,27 +233,40 @@ class TextInjector(private val context: Context) {
     ): DeliveryOutcome? {
         val before = node?.snapshot()
         if (!service.commitTextThroughInputMethod(text)) return null
-        return settle(InjectionRoute.INPUT_CONNECTION, node, before, text)
+        return settle(verify(InjectionRoute.INPUT_CONNECTION, node, before, last = true), text)
     }
 
-    private fun settle(
+    private fun verify(
         route: InjectionRoute,
         node: AccessibilityNodeInfo?,
         before: FieldSnapshot?,
+        last: Boolean,
+    ): InjectionCheck {
+        val onMain = Looper.myLooper() == Looper.getMainLooper()
+        val schedule = InjectionVerifier.scheduleFor(route, last, onMain)
+        val check =
+            if (schedule == null) {
+                InjectionCheck.UNREADABLE
+            } else {
+                InjectionVerifier.await(
+                    before = before,
+                    read = { node?.takeIf { runCatching { it.refresh() }.getOrDefault(false) }?.snapshot() },
+                    sleep = ::sleepUnlessInterrupted,
+                    schedule = schedule,
+                    cursorCounts = InjectionVerifier.cursorCounts(route),
+                )
+            }
+        DiagnosticsLog.log(InjectionVerifier.logLine(route, check, node?.isStandard()))
+        return check
+    }
+
+    private fun settle(
+        check: InjectionCheck,
         text: String,
     ): DeliveryOutcome {
-        val onMain = Looper.myLooper() == Looper.getMainLooper()
-        val check =
-            InjectionVerifier.await(
-                before = before,
-                read = { node?.takeIf { runCatching { it.refresh() }.getOrDefault(false) }?.snapshot() },
-                sleep = ::sleepUnlessInterrupted,
-                schedule = if (onMain) InjectionVerifier.NO_WAIT_MS else InjectionVerifier.SCHEDULE_MS,
-                cursorCounts = InjectionVerifier.cursorCounts(route),
-            )
-        DiagnosticsLog.log(InjectionVerifier.logLine(route, check, node?.isStandard()))
         if (check == InjectionCheck.UNCHANGED) {
             copyToClipboard(text)
+            DiagnosticsLog.log(InjectionVerifier.logLine(InjectionRoute.COPY, null, null))
             return DeliveryOutcome.CLIPBOARD_FALLBACK
         }
         return DeliveryOutcome.INJECTED
@@ -194,35 +289,43 @@ class TextInjector(private val context: Context) {
     private fun setTextIntoNode(
         node: AccessibilityNodeInfo,
         text: String,
-    ): Boolean {
-        if (!node.hasAction(AccessibilityNodeInfo.ACTION_SET_TEXT)) return false
+    ): SetTextSent? {
+        if (!node.hasAction(AccessibilityNodeInfo.ACTION_SET_TEXT)) return null
 
         val current = if (node.isShowingHintText) "" else node.text?.toString().orEmpty()
-
-        var selStart = node.textSelectionStart
-        var selEnd = node.textSelectionEnd
-        if (selStart < 0 || selStart > current.length) selStart = current.length
-        if (selEnd < selStart || selEnd > current.length) selEnd = selStart
-
-        val newText = current.substring(0, selStart) + text + current.substring(selEnd)
+        val plan = InjectionChain.planSetText(current, node.textSelectionStart, node.textSelectionEnd, text)
         val setArgs =
             Bundle().apply {
                 putCharSequence(
                     AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                    newText,
+                    plan.newText,
                 )
             }
-        if (!node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, setArgs)) return false
+        if (!node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, setArgs)) return null
+        return SetTextSent(cursor = plan.cursor, sameText = plan.sameText)
+    }
 
-        val cursor = selStart + text.length
+    private class SetTextSent(
+        val cursor: Int,
+        val sameText: Boolean,
+    )
+
+    private fun moveCursor(
+        node: AccessibilityNodeInfo,
+        cursor: Int,
+    ) = setSelection(node, cursor, cursor)
+
+    private fun setSelection(
+        node: AccessibilityNodeInfo,
+        start: Int,
+        end: Int,
+    ) {
         val selArgs =
             Bundle().apply {
-                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, cursor)
-                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, cursor)
+                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, start)
+                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, end)
             }
-
-        node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selArgs)
-        return true
+        runCatching { node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selArgs) }
     }
 
     private fun AccessibilityNodeInfo.hasAction(id: Int): Boolean = actionList.any { it.id == id }
@@ -247,71 +350,5 @@ class TextInjector(private val context: Context) {
 
     private companion object {
         const val CLIP_LABEL = "Anonen"
-    }
-}
-
-internal class ClipboardCleanup<C : Any>(
-    private val read: () -> C?,
-    private val holds: (C, String) -> Boolean,
-    private val restore: (C) -> Boolean,
-    private val clear: () -> Unit,
-    private val post: (delayMs: Long, block: () -> Unit) -> Unit,
-) {
-    private class Pending<C>(val previous: C?, val text: String)
-
-    private val lock = Any()
-    private var pending: Pending<C>? = null
-
-    fun beginPaste(): C? =
-        synchronized(lock) {
-            val current = read()
-            val waiting = pending
-            pending = null
-            when {
-                waiting == null -> current
-
-                current == null || holds(current, waiting.text) -> waiting.previous
-
-                else -> current
-            }
-        }
-
-    fun afterPaste(
-        previous: C?,
-        text: String,
-        pasted: Boolean,
-    ) {
-        if (!pasted) {
-            synchronized(lock) { cleanUp(previous, text) }
-            return
-        }
-        val mine = Pending(previous, text)
-        synchronized(lock) { pending = mine }
-        post(DELAY_MS) {
-            synchronized(lock) {
-                if (pending === mine) {
-                    pending = null
-                    cleanUp(previous, text)
-                }
-            }
-        }
-    }
-
-    fun keep() {
-        synchronized(lock) { pending = null }
-    }
-
-    private fun cleanUp(
-        previous: C?,
-        text: String,
-    ) {
-        val current = read()
-        if (current != null && !holds(current, text)) return
-        if (previous != null && restore(previous)) return
-        clear()
-    }
-
-    companion object {
-        const val DELAY_MS = 1200L
     }
 }

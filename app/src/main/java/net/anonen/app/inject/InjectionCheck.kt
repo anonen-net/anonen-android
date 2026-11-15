@@ -48,7 +48,18 @@ internal class FieldSnapshot private constructor(
 internal object InjectionVerifier {
     val SCHEDULE_MS: List<Long> = (0L..1000L step 100L).toList()
 
-    val NO_WAIT_MS: List<Long> = listOf(0L)
+    val SET_TEXT_SHORT_MS: List<Long> = (0L..500L step 100L).toList()
+
+    fun scheduleFor(
+        route: InjectionRoute,
+        last: Boolean,
+        onMain: Boolean,
+    ): List<Long>? =
+        when {
+            onMain -> null
+            route == InjectionRoute.SET_TEXT && !last -> SET_TEXT_SHORT_MS
+            else -> SCHEDULE_MS
+        }
 
     fun cursorCounts(route: InjectionRoute): Boolean = route != InjectionRoute.SET_TEXT
 
@@ -102,10 +113,15 @@ internal object InjectionVerifier {
             when (check) {
                 null -> "なし"
                 InjectionCheck.CHANGED -> "入った"
-                InjectionCheck.UNCHANGED -> "変わらない→コピーを残す"
+                InjectionCheck.UNCHANGED -> "変わらない"
                 InjectionCheck.UNREADABLE -> "読めない→成功を信じる"
             }
         val standard = standardField?.let { if (it) "yes" else "no" } ?: "?"
         return "配送の経路=$route 確かめ=$verdict 標準の欄=$standard"
     }
+
+    fun notSentLine(
+        route: InjectionRoute,
+        standardField: Boolean?,
+    ): String = logLine(route, null, standardField).replace("確かめ=なし", "確かめ=なし（送れなかった）")
 }
