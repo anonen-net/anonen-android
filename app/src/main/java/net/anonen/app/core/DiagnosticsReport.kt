@@ -54,7 +54,7 @@ object DiagnosticsReport {
         auth: AnonenCloudAuth.AuthStatus,
         account: CloudAccountStatus?,
         usage: UsageSnapshot?,
-    ): String = format(collect(context, settings, auth, account, usage), DiagnosticsLog.fullLogText())
+    ): String = format(collect(context, settings, auth, account, usage), DiagnosticsLog.newestFirstText())
 
     fun format(
         env: Environment,
@@ -75,7 +75,7 @@ object DiagnosticsReport {
         rows += accountRow(env)
         planRow(env)?.let { rows += it }
         usageRow(env.usage)?.let { rows += it }
-        rows += row("log", if (log.isBlank()) "empty" else "full, oldest first")
+        rows += row("log", if (log.isBlank()) "empty" else "full, newest first")
 
         val header = (listOf(HEADER) + rows + FOOTER).joinToString("\n")
 

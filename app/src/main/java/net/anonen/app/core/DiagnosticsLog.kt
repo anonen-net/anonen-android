@@ -44,6 +44,15 @@ object DiagnosticsLog {
             ?: _events.value.asReversed().joinToString("\n")
     }
 
+    fun newestFirstText(): String = newestFirst(fullLogText())
+
+    internal fun newestFirst(text: String): String =
+        text
+            .trimEnd('\n')
+            .lines()
+            .asReversed()
+            .joinToString("\n")
+
     fun clear() {
         _events.value = emptyList()
         synchronized(fileLock) { runCatching { sinkFile?.delete() } }

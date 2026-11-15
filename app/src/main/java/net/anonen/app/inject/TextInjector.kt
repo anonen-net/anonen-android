@@ -52,11 +52,13 @@ class TextInjector(private val context: Context) {
                 @Suppress("DEPRECATION")
                 focus?.recycle()
                 copyToClipboard(text)
+                DiagnosticsLog.log(InjectionVerifier.logLine(InjectionRoute.COPY, null, null))
                 return DeliveryOutcome.CLIPBOARD_FALLBACK
             }
         }
-        if (focus != null) {
-            try {
+
+        try {
+            if (focus != null) {
                 val why = "isPassword=${focus.isPassword} inputType=0x${focus.inputType.toString(16)}"
                 when (passwordVerdict(allowPasswordFields, isBlockedPasswordNode(focus.isPassword, focus.inputType))) {
                     PasswordVerdict.BLOCK -> {
@@ -71,27 +73,29 @@ class TextInjector(private val context: Context) {
                 if (outcome != null) {
                     return outcome
                 }
-            } finally {
-                @Suppress("DEPRECATION")
-                focus.recycle()
             }
-        }
-        if (service != null) {
-            when (passwordVerdict(allowPasswordFields, service.isCurrentInputPassword())) {
-                PasswordVerdict.BLOCK -> {
-                    DiagnosticsLog.log("パスワード欄と判定して配送しない: 入力接続の inputType")
-                    return DeliveryOutcome.BLOCKED_PASSWORD
+            if (service != null) {
+                when (passwordVerdict(allowPasswordFields, service.isCurrentInputPassword())) {
+                    PasswordVerdict.BLOCK -> {
+                        DiagnosticsLog.log("パスワード欄と判定して配送しない: 入力接続の inputType")
+                        return DeliveryOutcome.BLOCKED_PASSWORD
+                    }
+                    PasswordVerdict.ALLOWED_BY_SETTING ->
+                        DiagnosticsLog.log("パスワード欄と判定したが、設定に従って入れる: 入力接続の inputType")
+                    PasswordVerdict.NOT_PASSWORD -> Unit
                 }
-                PasswordVerdict.ALLOWED_BY_SETTING ->
-                    DiagnosticsLog.log("パスワード欄と判定したが、設定に従って入れる: 入力接続の inputType")
-                PasswordVerdict.NOT_PASSWORD -> Unit
+                val outcome = commitThroughInputMethod(service, focus, text)
+                if (outcome != null) {
+                    return outcome
+                }
             }
-            if (service.commitTextThroughInputMethod(text)) {
-                return DeliveryOutcome.INJECTED
-            }
+            copyToClipboard(text)
+            DiagnosticsLog.log(InjectionVerifier.logLine(InjectionRoute.COPY, null, focus?.isStandard()))
+            return DeliveryOutcome.CLIPBOARD_FALLBACK
+        } finally {
+            @Suppress("DEPRECATION")
+            focus?.recycle()
         }
-        copyToClipboard(text)
-        return DeliveryOutcome.CLIPBOARD_FALLBACK
     }
 
     private fun injectIntoNode(
@@ -107,12 +111,14 @@ class TextInjector(private val context: Context) {
             )
         ) {
             InjectionPlan.INPUT_CONNECTION_COMMIT -> {
+                val before = node.snapshot()
                 if (AnonenAccessibilityService.instance?.commitTextThroughInputMethod(text) == true) {
-                    return DeliveryOutcome.INJECTED
+                    return settle(InjectionRoute.INPUT_CONNECTION, node, before, text)
                 }
             }
             InjectionPlan.STANDARD_SET_TEXT -> {
-                if (setTextIntoNode(node, text)) return DeliveryOutcome.INJECTED
+                val before = node.snapshot()
+                if (setTextIntoNode(node, text)) return settle(InjectionRoute.SET_TEXT, node, before, text)
                 if (node.hasAction(AccessibilityNodeInfo.ACTION_PASTE)) {
                     return pasteIntoNode(node, text)
                 }
@@ -127,6 +133,7 @@ class TextInjector(private val context: Context) {
         node: AccessibilityNodeInfo,
         text: String,
     ): DeliveryOutcome? {
+        val before = node.snapshot()
         val previous = cleanup.beginPaste()
         clipboard.setSensitivePlainText(CLIP_LABEL, text)
         val pasted =
@@ -134,8 +141,55 @@ class TextInjector(private val context: Context) {
                 .getOrDefault(false)
 
         cleanup.afterPaste(previous, text, pasted)
-        return if (pasted) DeliveryOutcome.INJECTED else null
+        return if (pasted) settle(InjectionRoute.PASTE, node, before, text) else null
     }
+
+    private fun commitThroughInputMethod(
+        service: AnonenAccessibilityService,
+        node: AccessibilityNodeInfo?,
+        text: String,
+    ): DeliveryOutcome? {
+        val before = node?.snapshot()
+        if (!service.commitTextThroughInputMethod(text)) return null
+        return settle(InjectionRoute.INPUT_CONNECTION, node, before, text)
+    }
+
+    private fun settle(
+        route: InjectionRoute,
+        node: AccessibilityNodeInfo?,
+        before: FieldSnapshot?,
+        text: String,
+    ): DeliveryOutcome {
+        val onMain = Looper.myLooper() == Looper.getMainLooper()
+        val check =
+            InjectionVerifier.await(
+                before = before,
+                read = { node?.takeIf { runCatching { it.refresh() }.getOrDefault(false) }?.snapshot() },
+                sleep = ::sleepUnlessInterrupted,
+                schedule = if (onMain) InjectionVerifier.NO_WAIT_MS else InjectionVerifier.SCHEDULE_MS,
+                cursorCounts = InjectionVerifier.cursorCounts(route),
+            )
+        DiagnosticsLog.log(InjectionVerifier.logLine(route, check, node?.isStandard()))
+        if (check == InjectionCheck.UNCHANGED) {
+            copyToClipboard(text)
+            return DeliveryOutcome.CLIPBOARD_FALLBACK
+        }
+        return DeliveryOutcome.INJECTED
+    }
+
+    private fun sleepUnlessInterrupted(ms: Long): Boolean =
+        try {
+            Thread.sleep(ms)
+            true
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        }
+
+    private fun AccessibilityNodeInfo.snapshot(): FieldSnapshot? =
+        runCatching { FieldSnapshot.of(text, isShowingHintText, textSelectionStart, textSelectionEnd) }.getOrNull()
+
+    private fun AccessibilityNodeInfo.isStandard(): Boolean = TextInjectionPolicy.isStandardEditText(className)
 
     private fun setTextIntoNode(
         node: AccessibilityNodeInfo,
